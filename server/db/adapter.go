@@ -36,9 +36,13 @@ type Adapter interface {
 	// UserGetAll returns user records for a given list of user IDs
 	UserGetAll(ids ...t.Uid) ([]t.User, error)
 	// UserDelete deletes user record
-	UserDelete(id t.Uid, soft bool) error
+	UserDelete(id t.Uid, hard bool) error
+	// UserGetDisabled returns IDs of users which were soft-deleted since given time.
+	UserGetDisabled(time.Time) ([]t.Uid, error)
 	// UserUpdate updates user record
 	UserUpdate(uid t.Uid, update map[string]interface{}) error
+	// UserUpdateTags adds or resets user's tags
+	UserUpdateTags(uid t.Uid, tags []string, reset bool) error
 	// UserGetByCred returns user ID for the given validated credential.
 	UserGetByCred(method, value string) (t.Uid, error)
 
@@ -65,8 +69,8 @@ type Adapter interface {
 	AuthGetRecord(user t.Uid, scheme string) (string, auth.Level, []byte, time.Time, error)
 	// AuthAddRecord creates new authentication record
 	AuthAddRecord(user t.Uid, scheme, unique string, authLvl auth.Level, secret []byte, expires time.Time) (bool, error)
-	// AuthDelRecord deteles an existing record
-	AuthDelRecord(user t.Uid, unique string) error
+	// AuthDelScheme deletes an existing authentication scheme for the user.
+	AuthDelScheme(user t.Uid, scheme string) error
 	// AuthDelAllRecords deletes all records of a given user.
 	AuthDelAllRecords(uid t.Uid) (int, error)
 	// AuthUpdRecord modifies an authentication record.
@@ -84,15 +88,18 @@ type Adapter interface {
 	TopicsForUser(uid t.Uid, keepDeleted bool, opts *t.QueryOpt) ([]t.Subscription, error)
 	// UsersForTopic loads users' subscriptions for a given topic. Public is loaded.
 	UsersForTopic(topic string, keepDeleted bool, opts *t.QueryOpt) ([]t.Subscription, error)
+	// OwnTopics loads a slice of topic names where the user is the owner.
+	OwnTopics(uid t.Uid, opts *t.QueryOpt) ([]string, error)
 	// TopicShare creates topc subscriptions
 	TopicShare(subs []*t.Subscription) (int, error)
 	// TopicDelete deletes topic, subscription, messages
-	TopicDelete(topic string) error
+	TopicDelete(topic string, hard bool) error
 	// TopicUpdateOnMessage increments Topic's or User's SeqId value and updates TouchedAt timestamp.
 	TopicUpdateOnMessage(topic string, msg *t.Message) error
 	// TopicUpdate updates topic record.
 	TopicUpdate(topic string, update map[string]interface{}) error
-
+	// TopicOwnerChange updates topic's owner
+	TopicOwnerChange(topic string, newOwner, oldOwner t.Uid) error
 	// Topic subscriptions
 
 	// SubscriptionGet reads a subscription of a user to a topic
@@ -105,10 +112,10 @@ type Adapter interface {
 	SubsUpdate(topic string, user t.Uid, update map[string]interface{}) error
 	// SubsDelete deletes a single subscription
 	SubsDelete(topic string, user t.Uid) error
-	// SubsDelForTopic soft-deletes all subscriptions to the given topic
-	SubsDelForTopic(topic string) error
-	// SubsDelForUser soft-deletes all subscriptions of the given user
-	SubsDelForUser(user t.Uid) error
+	// SubsDelForTopic deletes all subscriptions to the given topic
+	SubsDelForTopic(topic string, hard bool) error
+	// SubsDelForUser deletes all subscriptions of the given user
+	SubsDelForUser(user t.Uid, hard bool) error
 
 	// Search
 

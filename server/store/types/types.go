@@ -273,8 +273,9 @@ func ParseP2P(p2p string) (uid1, uid2 Uid, err error) {
 		if count < 16 {
 			if err != nil {
 				err = errors.New("ParseP2P: failed to decode " + err.Error())
+			} else {
+				err = errors.New("ParseP2P: invalid decoded length")
 			}
-			err = errors.New("ParseP2P: invalid decoded length")
 			return
 		}
 		uid1 = Uid(binary.LittleEndian.Uint64(dec))
@@ -402,8 +403,8 @@ const (
 
 	// Normal user's access to a topic ("JRWPS")
 	ModeCPublic AccessMode = ModeJoin | ModeRead | ModeWrite | ModePres | ModeShare
-	// User's subscription to 'me' and 'fnd' ("JP")
-	ModeCSelf AccessMode = ModeJoin | ModePres
+	// User's subscription to 'me' and 'fnd' ("JPS")
+	ModeCSelf AccessMode = ModeJoin | ModePres | ModeShare
 	// Owner's subscription to a generic topic ("JRWPASDO")
 	ModeCFull AccessMode = ModeJoin | ModeRead | ModeWrite | ModePres | ModeApprove | ModeShare | ModeDelete | ModeOwner
 	// Default P2P access mode ("JRWPA")
@@ -418,6 +419,9 @@ const (
 
 	// Invalid mode to indicate an error
 	ModeInvalid AccessMode = 0x100000
+
+	// All possible valid bits (excluding ModeInvalid and ModeUnset)
+	ModeBitmask AccessMode = ModeJoin | ModeRead | ModeWrite | ModePres | ModeApprove | ModeShare | ModeDelete | ModeOwner
 )
 
 // MarshalText converts AccessMode to ASCII byte slice.
@@ -445,6 +449,7 @@ func (m AccessMode) MarshalText() ([]byte, error) {
 func (m *AccessMode) UnmarshalText(b []byte) error {
 	m0 := ModeUnset
 
+Loop:
 	for i := 0; i < len(b); i++ {
 		switch b[i] {
 		case 'J', 'j':
@@ -465,7 +470,7 @@ func (m *AccessMode) UnmarshalText(b []byte) error {
 			m0 |= ModeOwner
 		case 'N', 'n':
 			m0 = ModeNone // N means explicitly no access, all bits cleared
-			break
+			break Loop
 		default:
 			return errors.New("AccessMode: invalid character '" + string(b[i]) + "'")
 		}
@@ -493,8 +498,7 @@ func (m AccessMode) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
-	res = append([]byte{'"'}, res...)
-	return append(res, '"'), nil
+	return append(append([]byte{'"'}, res...), '"'), nil
 }
 
 // UnmarshalJSON reads AccessMode from a quoted string.
@@ -524,16 +528,21 @@ func (m AccessMode) Value() (driver.Value, error) {
 	return string(res), nil
 }
 
+// BetterThan checks if grant mode allows more permissions than requested in want mode.
+func (grant AccessMode) BetterThan(want AccessMode) bool {
+	return ModeBitmask&grant&^want != 0
+}
+
 // BetterEqual checks if grant mode allows all permissions requested in want mode.
 func (grant AccessMode) BetterEqual(want AccessMode) bool {
-	return grant&want == want
+	return ModeBitmask&grant&want == want
 }
 
 // Delta between two modes as a string old.Delta(new). JRPAS -> JRWS: "+W-PA"
 // Zero delta is an empty string ""
 func (o AccessMode) Delta(n AccessMode) string {
 	// Removed bits, bits present in 'old' but missing in 'new' -> '-'
-	o2n := o &^ n
+	o2n := ModeBitmask & o &^ n
 	var removed string
 	if o2n > 0 {
 		removed = o2n.String()
@@ -543,7 +552,7 @@ func (o AccessMode) Delta(n AccessMode) string {
 	}
 
 	// Added bits, bits present in 'n' but missing in 'o' -> '+'
-	n2o := n &^ o
+	n2o := ModeBitmask & n &^ o
 	var added string
 	if n2o > 0 {
 		added = n2o.String()
@@ -607,6 +616,12 @@ func (m AccessMode) IsZero() bool {
 // IsInvalid checks if mode is invalid.
 func (m AccessMode) IsInvalid() bool {
 	return m == ModeInvalid
+}
+
+// IsDefined checks if the mode is defined: not invalid and not unset.
+// ModeNone is considered to be defined.
+func (m AccessMode) IsDefined() bool {
+	return m != ModeInvalid && m != ModeUnset
 }
 
 // DefaultAccess is a per-topic default access modes
@@ -714,7 +729,13 @@ func (s *Subscription) GetTouchedAt() *time.Time {
 
 // SetTouchedAt sets the value of touchedAt.
 func (s *Subscription) SetTouchedAt(touchedAt *time.Time) {
-	s.touchedAt = touchedAt
+	if s.touchedAt == nil || touchedAt.After(*s.touchedAt) {
+		s.touchedAt = touchedAt
+	}
+
+	if s.touchedAt.Before(s.UpdatedAt) {
+		s.touchedAt = &s.UpdatedAt
+	}
 }
 
 // GetSeqId returns seqId.
@@ -780,6 +801,9 @@ type Topic struct {
 	// Use bearer token or use ACL
 	UseBt bool
 
+	// Topic owner. Could be zero
+	Owner string
+
 	// Default access to topic
 	Access DefaultAccess
 
@@ -794,7 +818,6 @@ type Topic struct {
 	Tags StringSlice
 
 	// Deserialized ephemeral params
-	owner   Uid                  // first assigned owner
 	perUser map[Uid]*perUserData // deserialized from Subscription
 }
 
@@ -813,8 +836,8 @@ func (t *Topic) GiveAccess(uid Uid, want, given AccessMode) {
 	pud.given = given
 
 	t.perUser[uid] = pud
-	if want&given&ModeOwner != 0 && t.owner.IsZero() {
-		t.owner = uid
+	if want&given&ModeOwner != 0 && t.Owner == "" {
+		t.Owner = uid.String()
 	}
 }
 
@@ -829,11 +852,6 @@ func (t *Topic) SetPrivate(uid Uid, private interface{}) {
 	}
 	pud.private = private
 	t.perUser[uid] = pud
-}
-
-// GetOwner returns topic's owner.
-func (t *Topic) GetOwner() Uid {
-	return t.owner
 }
 
 // GetPrivate returns given user's private value.
@@ -930,7 +948,7 @@ func (rs RangeSorter) Less(i, j int) bool {
 // Normalize ranges - remove overlaps: [1..4],[2..4],[5..7] -> [1..7].
 // The ranges are expected to be sorted.
 // Ranges are inclusive-inclusive, i.e. [1..3] -> 1, 2, 3.
-func (rs RangeSorter) Normalize() {
+func (rs RangeSorter) Normalize() RangeSorter {
 	ll := rs.Len()
 	if ll > 1 {
 		prev := 0
@@ -954,6 +972,8 @@ func (rs RangeSorter) Normalize() {
 		}
 		rs = rs[:prev+1]
 	}
+
+	return rs
 }
 
 // DelMessage is a log entry of a deleted message range.

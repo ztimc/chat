@@ -33,13 +33,13 @@ Sample Drafty-JSON representation of the text above:
 
 ## Structure
 
-Drafty object has three fields: plain text `txt`, inline markup `fmt`, entities `ent`.
+Drafty object has three fields: plain text `txt`, inline markup `fmt`, and entities `ent`.
 
 ### Plain Text
 
 The message to be sent is converted to plain Unicode text with all markup stripped and kept in `txt` field. In general, a valid Drafy may contain just the `txt` field.
 
-### Inline Formatting
+### Inline Formatting `fmt`
 
 Inline formatting is an array of individual styles in the `fmt` field. Each style is represented by an object with at least `at` and `len` fields. The `at` value means 0-based offset into `txt`, `len` is the number of characters to apply formatting to. The third value of style is either `tp` or `key`.
 
@@ -54,15 +54,63 @@ If key is provided, it's a 0-based index into the `ent` field which contains an 
  * `LN`: link (URL) [https://api.tinode.co](https://api.tinode.co)
  * `MN`: mention such as [@tinode](#)
  * `HT`: hashtag, e.g. [#hashtag](#)
- * `IM`: attached image
- * `EX`: file attachment
+ * `IM`: inline image
+ * `EX`: generic attachment
+ * `FM`: form / set of fields
+ * `BN`: interactive button
 
 Examples:
  * `{ "at":8, "len":4, "tp":"ST"}`: apply formatting `ST` (strong/bold) to 4 characters starting at offset 8 into `txt`.
  * `{ "at":144, "len":8, "key":2 }`: insert entity `ent[2]` into position 144, the entity spans 8 characters.
  * `{ "at":-1, "len":0, "key":4 }`: show the `ent[4]` as a file attachment, don't apply any styling to text.
 
-### Entities
+
+#### `FM`: a form, an ordered set or fields
+Form provides means to add paragraph-level formatting to a logical group of elements:
+<table>
+<tr><th>Do you agree?</th></tr>
+<tr><td><a href="">Yes</a></td></tr>
+<tr><td><a href="">No</a></td></tr>
+</table>
+
+```js
+{
+ "txt": "Do you agree? Yes No",
+ "fmt": [
+   {"at": 0, "len": 20, "tp": "FM"},
+   {"at": 0, "len": 13, "tp": "ST"}
+   {"at": 13, "len": 1, "tp": "BR"},
+   {"at": 14, "len": 3, "key": 0},
+   {"at": 17, "len": 1, "tp": "BR"},
+   {"at": 18, "len": 2, "key": 1},
+ ],
+ "ent": [
+   {"tp": "BN", "data": {"name": "yes", "act": "pub", "val": "oh yes!"}},
+   {"tp": "BN", "data": {"name": "no", "act": "pub"}}
+ ]
+}
+```
+If a `Yes` button is pressed in the example above, the client is expected to send a message to the server with the following content:
+```js
+{
+ "txt": "Yes",
+ "fmt": [{
+   "at":-1
+ }],
+ "ent": [{
+   "tp": "EX",
+   "data": {
+     "mime": "application/json",
+     "val": {
+       "seq": 15, // seq id of the message containing the form.
+       "resp": {"yes": "oh yes!"}
+     }
+   }
+ }]
+}
+```
+
+### Entities `ent`
 
 In general, an entity is a text decoration which requires additional (possibly large) data. An entity is represented by an object with two fields: `tp` indicates type of the entity, `data` is type-dependent styling information. Unknown fields are ignored.
 
@@ -98,8 +146,8 @@ To create a message with just a single image and no text, use the following Draf
 ```js
 {
   txt: " ",
-  fmt: {at: 0, len: 1, key: 0},
-  ent: {tp: "IM", data: {<your image data here>}}
+  fmt: [{len: 1}],
+  ent: [{tp: "IM", data: {<your image data here>}]}
 }
 ```
 
@@ -143,3 +191,25 @@ Hashtag `data` contains a single `val` field with the hashtag value which the cl
 ```js
 { "tp":"HT", "data":{ "val":"tinode" } }
 ```
+
+#### `BN`: interactive button
+`BN` offers an option to send data to a server, either origin server or another one. The `data` contains the following fields:
+```js
+{
+  "tp": "BN",
+  "data": {
+    "name": "confirmation",
+    "act": "url",
+    "val": "some-value",
+    "ref": "https://www.example.com/"
+  }
+}
+```
+* `act`: type of action in response to button click:
+  * `pub`: send a `{pub}` message to the current server.
+  * `url`: issue an `HTTP GET` request to the URL from the `data.ref` field. A `name=val` and `uid=<current-user-ID>` query parameters are appended to the url.
+* `name`: optional name of the button which is reported back to the server.
+* `val`: additional opaque data. If `name` is provided but `val` is not, `val` is assumed to be `1`.
+* `ref`: the actual URL for the `url` action.
+
+The button in this example will send a HTTP GET to https://www.example.com/?confirmation=some-value&uid=usrFsk73jYRR

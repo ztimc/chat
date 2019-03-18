@@ -30,6 +30,7 @@ type tPrivate struct {
 	Comment string `json:"comment"`
 }
 
+// DefAccess is default access mode.
 type DefAccess struct {
 	Auth string `json:"auth"`
 	Anon string `json:"anon"`
@@ -135,11 +136,12 @@ type P2PSub struct {
 
 // Data is a message in data.json.
 type Data struct {
-	Users       []User       `json:"users"`
-	Grouptopics []GroupTopic `json:"grouptopics"`
-	Groupsubs   []GroupSub   `json:"groupsubs"`
-	P2psubs     []P2PSub     `json:"p2psubs"`
-	Messages    []string     `json:"messages"`
+	Users       []User                   `json:"users"`
+	Grouptopics []GroupTopic             `json:"grouptopics"`
+	Groupsubs   []GroupSub               `json:"groupsubs"`
+	P2psubs     []P2PSub                 `json:"p2psubs"`
+	Messages    []string                 `json:"messages"`
+	Forms       []map[string]interface{} `json:"forms"`
 	datapath    string
 }
 

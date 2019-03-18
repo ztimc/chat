@@ -17,6 +17,7 @@ import (
 
 func genDb(reset bool, config string, data *Data) {
 	var err error
+	var botAccount string
 
 	defer store.Close()
 
@@ -41,10 +42,14 @@ func genDb(reset bool, config string, data *Data) {
 		log.Fatal("Failed to init DB:", err)
 	}
 
-	if data.Users == nil {
+	if len(data.Users) == 0 {
 		log.Println("No data provided, stopping")
 		return
 	}
+
+	// Add authentication record
+	authHandler := store.GetAuthHandler("basic")
+	authHandler.Init(`{"add_to_tags": true}`, "basic")
 
 	nameIndex := make(map[string]string, len(data.Users))
 
@@ -63,14 +68,13 @@ func genDb(reset bool, config string, data *Data) {
 		}
 		user.CreatedAt = getCreatedTime(uu.CreatedAt)
 
-		if uu.Email != "" || uu.Tel != "" {
-			user.Tags = make([]string, 0)
-			if uu.Email != "" {
-				user.Tags = append(user.Tags, "email:"+uu.Email)
-			}
-			if uu.Tel != "" {
-				user.Tags = append(user.Tags, "tel:"+uu.Tel)
-			}
+		user.Tags = make([]string, 0)
+		user.Tags = append(user.Tags, "basic:"+uu.Username)
+		if uu.Email != "" {
+			user.Tags = append(user.Tags, "email:"+uu.Email)
+		}
+		if uu.Tel != "" {
+			user.Tags = append(user.Tags, "tel:"+uu.Tel)
 		}
 
 		// store.Users.Create will subscribe user to !me topic but won't create a !me topic
@@ -113,6 +117,7 @@ func genDb(reset bool, config string, data *Data) {
 		if passwd == "(random)" {
 			// Generate random password
 			passwd = getPassword(8)
+			botAccount = uu.Username
 		}
 		if _, err := authHandler.AddRecord(&auth.Rec{Uid: user.Uid(), AuthLevel: authLevel},
 			[]byte(uu.Username+":"+passwd)); err != nil {
@@ -131,6 +136,10 @@ func genDb(reset bool, config string, data *Data) {
 		}
 
 		fmt.Println("usr;" + uu.Username + ";" + user.Uid().UserId() + ";" + passwd)
+	}
+
+	if botAccount == "" && len(data.Users) > 0 {
+		botAccount = data.Users[0].Username
 	}
 
 	log.Println("Generating group topics...")
@@ -271,100 +280,122 @@ func genDb(reset bool, config string, data *Data) {
 		}
 	}
 
-	messageCount := len(data.Messages)
+	seqIds := map[string]int{}
+	now := types.TimeNow().Add(-time.Minute * 10)
 
-	if messageCount == 0 {
-		log.Println("No messages found, all done")
-		return
+	messageCount := len(data.Messages)
+	if messageCount > 0 {
+		log.Println("Inserting messages...")
+
+		if messageCount > 1 {
+			// Shuffle messages
+			rand.Shuffle(len(data.Messages), func(i, j int) {
+				data.Messages[i], data.Messages[j] = data.Messages[j], data.Messages[i]
+			})
+
+			// Starting 4 days ago.
+			timestamp := now.Add(time.Hour * time.Duration(-24*4))
+			toInsert := 96 // 96 is the maximum, otherwise messages may appear in the future
+			// Initial maximum increment of the message sent time in milliseconds
+			increment := 3600 * 1000
+			subIdx := rand.Intn(len(data.Groupsubs) + len(data.P2psubs)*2)
+			for i := 0; i < toInsert; i++ {
+				// At least 20% of subsequent messages should come from the same user in the same topic.
+				if rand.Intn(5) > 0 {
+					subIdx = rand.Intn(len(data.Groupsubs) + len(data.P2psubs)*2)
+				}
+
+				var topic string
+				var from types.Uid
+				if subIdx < len(data.Groupsubs) {
+					topic = nameIndex[data.Groupsubs[subIdx].Topic]
+					from = types.ParseUid(nameIndex[data.Groupsubs[subIdx].User])
+				} else {
+					idx := (subIdx - len(data.Groupsubs)) / 2
+					usr := (subIdx - len(data.Groupsubs)) % 2
+					sub := data.P2psubs[idx]
+					topic = nameIndex[sub.pair]
+					from = types.ParseUid(nameIndex[sub.Users[usr].Name])
+				}
+
+				seqIds[topic]++
+				seqId := seqIds[topic]
+				str := data.Messages[i%len(data.Messages)]
+				// Max time between messages is 2 hours, averate - 1 hour, time is increasing as seqId increases
+				timestamp = timestamp.Add(time.Microsecond * time.Duration(rand.Intn(increment)))
+				if err = store.Messages.Save(&types.Message{
+					ObjHeader: types.ObjHeader{CreatedAt: timestamp},
+					SeqId:     seqId,
+					Topic:     topic,
+					From:      from.String(),
+					Content:   str}, true); err != nil {
+					log.Fatal("Failed to insert message: ", err)
+				}
+
+				// New increment: remaining time until 'now' divided by the number of messages to be inserted,
+				// then converted to milliseconds.
+				increment = int(now.Sub(timestamp).Nanoseconds() / int64(toInsert-i) / 1000000)
+
+				// log.Printf("Msg.seq=%d at %v, topic='%s' from='%s'", msg.SeqId, msg.CreatedAt, topic, from.UserId())
+			}
+		} else {
+			// Only one message is provided. Just insert it into every topic.
+			now := time.Now().UTC().Add(-time.Minute).Round(time.Millisecond)
+
+			for _, gt := range data.Grouptopics {
+				seqIds[nameIndex[gt.Name]] = 1
+				if err = store.Messages.Save(&types.Message{
+					ObjHeader: types.ObjHeader{CreatedAt: now},
+					SeqId:     1,
+					Topic:     nameIndex[gt.Name],
+					From:      nameIndex[gt.Owner],
+					Content:   data.Messages[0]}, true); err != nil {
+
+					log.Fatal("Failed to insert message: ", err)
+				}
+			}
+
+			usedp2p := make(map[string]bool)
+			for i := 0; len(usedp2p) < len(data.P2psubs)/2; i++ {
+				sub := data.P2psubs[i]
+				if usedp2p[nameIndex[sub.pair]] {
+					continue
+				}
+				usedp2p[nameIndex[sub.pair]] = true
+				seqIds[nameIndex[sub.pair]] = 1
+				if err = store.Messages.Save(&types.Message{
+					ObjHeader: types.ObjHeader{CreatedAt: now},
+					SeqId:     1,
+					Topic:     nameIndex[sub.pair],
+					From:      nameIndex[sub.Users[0].Name],
+					Content:   data.Messages[0]}, true); err != nil {
+
+					log.Fatal("Failed to insert message: ", err)
+				}
+			}
+		}
 	}
 
-	log.Println("Inserting messages...")
-
-	seqIds := map[string]int{}
-
-	if messageCount > 1 {
-		// Shuffle messages
-		rand.Shuffle(len(data.Messages), func(i, j int) {
-			data.Messages[i], data.Messages[j] = data.Messages[j], data.Messages[i]
-		})
-
-		now := time.Now().UTC().Add(-time.Minute).Round(time.Millisecond)
-		// Starting 4 days ago.
-		timestamp := now.Add(time.Hour * time.Duration(-24*4))
-		toInsert := 96 // 96 is the maximum, otherwise messages may appear in the future
-		// Initial maximum increment of the message sent time in milliseconds
-		increment := 3600 * 1000
-		subIdx := rand.Intn(len(data.Groupsubs) + len(data.P2psubs)*2)
-		for i := 0; i < toInsert; i++ {
-			// At least 20% of subsequent messages should come from the same user in the same topic.
-			if rand.Intn(5) > 0 {
-				subIdx = rand.Intn(len(data.Groupsubs) + len(data.P2psubs)*2)
-			}
-
-			var topic string
-			var from types.Uid
-			if subIdx < len(data.Groupsubs) {
-				topic = nameIndex[data.Groupsubs[subIdx].Topic]
-				from = types.ParseUid(nameIndex[data.Groupsubs[subIdx].User])
-			} else {
-				idx := (subIdx - len(data.Groupsubs)) / 2
-				usr := (subIdx - len(data.Groupsubs)) % 2
-				sub := data.P2psubs[idx]
-				topic = nameIndex[sub.pair]
-				from = types.ParseUid(nameIndex[sub.Users[usr].Name])
-			}
-
-			seqIds[topic]++
-			seqId := seqIds[topic]
-			str := data.Messages[i%len(data.Messages)]
-			// Max time between messages is 2 hours, averate - 1 hour, time is increasing as seqId increases
-			timestamp = timestamp.Add(time.Microsecond * time.Duration(rand.Intn(increment)))
-			if err = store.Messages.Save(&types.Message{
-				ObjHeader: types.ObjHeader{CreatedAt: timestamp},
-				SeqId:     seqId,
-				Topic:     topic,
-				From:      from.String(),
-				Content:   str}); err != nil {
-				log.Fatal("Failed to insert message: ", err)
-			}
-
-			// New increment: remaining time until 'now' divided by the number of messages to be inserted,
-			// then converted to milliseconds.
-			increment = int(now.Sub(timestamp).Nanoseconds() / int64(toInsert-i) / 1000000)
-
-			// log.Printf("Msg.seq=%d at %v, topic='%s' from='%s'", msg.SeqId, msg.CreatedAt, topic, from.UserId())
-		}
-	} else {
-		// Only one message is provided. Just insert it in every topic.
-		now := time.Now().UTC().Add(-time.Minute).Round(time.Millisecond)
-
-		for _, gt := range data.Grouptopics {
-			if err = store.Messages.Save(&types.Message{
-				ObjHeader: types.ObjHeader{CreatedAt: now},
-				SeqId:     1,
-				Topic:     nameIndex[gt.Name],
-				From:      nameIndex[gt.Owner],
-				Content:   data.Messages[0]}); err != nil {
-
-				log.Fatal("Failed to insert message: ", err)
-			}
-		}
-
-		usedp2p := make(map[string]bool)
-		for i := 0; len(usedp2p) < len(data.P2psubs)/2; i++ {
-			sub := data.P2psubs[i]
-			if usedp2p[nameIndex[sub.pair]] {
-				continue
-			}
-			usedp2p[nameIndex[sub.pair]] = true
-			if err = store.Messages.Save(&types.Message{
-				ObjHeader: types.ObjHeader{CreatedAt: now},
-				SeqId:     1,
-				Topic:     nameIndex[sub.pair],
-				From:      nameIndex[sub.Users[0].Name],
-				Content:   data.Messages[0]}); err != nil {
-
-				log.Fatal("Failed to insert message: ", err)
+	if len(data.Forms) != 0 {
+		from := nameIndex[botAccount]
+		log.Println("Inserting forms as ", botAccount, from)
+		ts := now
+		for _, form := range data.Forms {
+			for _, sub := range data.P2psubs {
+				ts = ts.Add(time.Second)
+				seqIds[nameIndex[sub.pair]]++
+				seqId := seqIds[nameIndex[sub.pair]]
+				if sub.Users[0].Name == botAccount || sub.Users[1].Name == botAccount {
+					if err = store.Messages.Save(&types.Message{
+						ObjHeader: types.ObjHeader{CreatedAt: ts},
+						SeqId:     seqId,
+						Topic:     nameIndex[sub.pair],
+						Head:      types.MessageHeaders{"mime": "text/x-drafty"},
+						From:      from,
+						Content:   form}, true); err != nil {
+						log.Fatal("Failed to insert form: ", err)
+					}
+				}
 			}
 		}
 	}

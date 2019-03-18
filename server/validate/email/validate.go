@@ -25,17 +25,18 @@ import (
 
 // Validator configuration.
 type validator struct {
-	HostUrl             string `json:"host_url"`
-	ValidationTemplFile string `json:"validation_body_templ"`
-	ResetTemplFile      string `json:"reset_body_templ"`
-	ValidationSubject   string `json:"validation_subject"`
-	ResetSubject        string `json:"reset_subject"`
-	SendFrom            string `json:"sender"`
-	SenderPassword      string `json:"sender_password"`
-	DebugResponse       string `json:"debug_response"`
-	MaxRetries          int    `json:"max_retries"`
-	SMTPAddr            string `json:"smtp_server"`
-	SMTPPort            string `json:"smtp_port"`
+	HostUrl             string   `json:"host_url"`
+	ValidationTemplFile string   `json:"validation_body_templ"`
+	ResetTemplFile      string   `json:"reset_body_templ"`
+	ValidationSubject   string   `json:"validation_subject"`
+	ResetSubject        string   `json:"reset_subject"`
+	SendFrom            string   `json:"sender"`
+	SenderPassword      string   `json:"sender_password"`
+	DebugResponse       string   `json:"debug_response"`
+	MaxRetries          int      `json:"max_retries"`
+	SMTPAddr            string   `json:"smtp_server"`
+	SMTPPort            string   `json:"smtp_port"`
+	Domains             []string `json:"domains"`
 	htmlValidationTempl *ht.Template
 	htmlResetTempl      *ht.Template
 	auth                smtp.Auth
@@ -134,7 +135,29 @@ func (v *validator) PreCheck(cred string, params interface{}) error {
 		return t.ErrMalformed
 	}
 
+	// If a whitelist of domains is provided, make sure the email belongs to the list.
+	if len(v.Domains) > 0 {
+		// Parse email into user and domain parts.
+		parts := strings.Split(addr.Address, "@")
+		if len(parts) != 2 {
+			return t.ErrMalformed
+		}
+
+		var found bool
+		for _, domain := range v.Domains {
+			if domain == parts[1] {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return t.ErrPolicy
+		}
+	}
+
 	// TODO: Check email uniqueness
+
 	return nil
 }
 
@@ -189,40 +212,41 @@ func (v *validator) ResetSecret(email, scheme, lang string, tmpToken []byte) err
 	return nil
 }
 
-// Find if user exists in the database, and if so return OK.
-func (v *validator) Check(user t.Uid, resp string) error {
+// Check checks if the provided validation response matches the expected response.
+// Returns the value of validated credential on success.
+func (v *validator) Check(user t.Uid, resp string) (string, error) {
 	cred, err := store.Users.GetCred(user, "email")
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if cred == nil {
 		// Request to validate non-existent credential.
-		return t.ErrNotFound
+		return "", t.ErrNotFound
 	}
 
 	if cred.Retries > v.MaxRetries {
-		return t.ErrPolicy
+		return "", t.ErrPolicy
 	}
 	if resp == "" {
-		return t.ErrCredentials
+		return "", t.ErrCredentials
 	}
 
 	// Comparing with dummy response too.
 	if cred.Resp == resp || v.DebugResponse == resp {
 		// Valid response, save confirmation.
-		return store.Users.ConfirmCred(user, "email")
+		return cred.Value, store.Users.ConfirmCred(user, "email")
 	}
 
-	// Invalid response, increment fail counter.
+	// Invalid response, increment fail counter, ignore possible error.
 	store.Users.FailCred(user, "email")
 
-	return t.ErrCredentials
+	return "", t.ErrCredentials
 }
 
 // Delete deletes user's records.
 func (v *validator) Delete(user t.Uid) error {
-	return nil
+	return store.Users.DelCred(user, "email")
 }
 
 // This is a basic SMTP sender which connects to a server using login/password.

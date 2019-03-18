@@ -65,6 +65,8 @@ type Session struct {
 
 	// Device ID of the client
 	deviceID string
+	// Platform: web, ios, android
+	platf string
 	// Human language of the client
 	lang string
 
@@ -215,6 +217,12 @@ func (s *Session) cleanUp(expired bool) {
 func (s *Session) dispatchRaw(raw []byte) {
 	var msg ClientComMessage
 
+	if len(raw) == 1 && raw[0] == 0x31 {
+		// 0x31 == '1'. This is a network probe message. Respond with a '0':
+		s.queueOutBytes([]byte{0x30})
+		return
+	}
+
 	toLog := raw
 	truncated := ""
 	if len(raw) > 512 {
@@ -343,6 +351,13 @@ func (s *Session) dispatch(msg *ClientComMessage) {
 		return
 	}
 
+	if globals.cluster.isPartitioned() {
+		// The cluster is partitioned due to network or other failure and this node is a part of the smaller partition.
+		// In order to avoid data inconsistency across the cluster we must reject all requests.
+		s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
+		return
+	}
+
 	handler(msg)
 
 	// Notify 'me' topic that this session is currently active
@@ -362,23 +377,21 @@ func (s *Session) subscribe(msg *ClientComMessage) {
 		expanded = genTopicName()
 		// msg.topic = expanded
 	} else {
-		var err *ServerComMessage
-		expanded, err = s.expandTopicName(msg)
-		if err != nil {
-			log.Println("s.subscribe:", err, s.sid)
-			s.queueOut(err)
+		var resp *ServerComMessage
+		expanded, resp = s.expandTopicName(msg)
+		if resp != nil {
+			s.queueOut(resp)
 			return
 		}
 	}
 
 	if sub := s.getSub(expanded); sub != nil {
-		log.Println("s.subscribe: already subscribed to topic=", expanded, s.sid)
 		s.queueOut(InfoAlreadySubscribed(msg.id, msg.topic, msg.timestamp))
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
 			log.Println("s.subscribe:", err, s.sid)
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
 	} else {
 		globals.hub.join <- &sessionJoin{
@@ -392,14 +405,14 @@ func (s *Session) subscribe(msg *ClientComMessage) {
 // Leave/Unsubscribe a topic
 func (s *Session) leave(msg *ClientComMessage) {
 	// Expand topic name
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
-		log.Println("s.leave:", err, s.sid)
-		s.queueOut(err)
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		s.queueOut(resp)
 		return
 	}
 
 	if sub := s.getSub(expanded); sub != nil {
+		log.Println("leave", expanded, "attached")
 		// Session is attached to the topic.
 		if (msg.topic == "me" || msg.topic == "fnd") && msg.Leave.Unsub {
 			// User should not unsubscribe from 'me' or 'find'. Just leaving is fine.
@@ -418,9 +431,10 @@ func (s *Session) leave(msg *ClientComMessage) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
 			log.Println("s.leave:", err, s.sid)
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
 	} else if !msg.Leave.Unsub {
+		log.Println("leave", expanded, "not attached")
 		// Session is not attached to the topic, wants to leave - fine, no change
 		s.queueOut(InfoNotJoined(msg.id, msg.topic, msg.timestamp))
 	} else {
@@ -434,11 +448,24 @@ func (s *Session) leave(msg *ClientComMessage) {
 // Broadcast a message to all topic subscribers
 func (s *Session) publish(msg *ClientComMessage) {
 	// TODO(gene): Check for repeated messages with the same ID
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
-		log.Println("s.publish:", err, s.sid)
-		s.queueOut(err)
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		s.queueOut(resp)
 		return
+	}
+
+	// Add "sender" header if the message is sent on behalf of another user.
+	if msg.from != s.uid.UserId() {
+		if msg.Pub.Head == nil {
+			msg.Pub.Head = make(map[string]interface{})
+		}
+		msg.Pub.Head["sender"] = s.uid.UserId()
+	} else if msg.Pub.Head != nil {
+		// Clear potentially false "sender" field.
+		delete(msg.Pub.Head, "sender")
+		if len(msg.Pub.Head) == 0 {
+			msg.Pub.Head = nil
+		}
 	}
 
 	data := &ServerComMessage{Data: &MsgServerData{
@@ -464,7 +491,7 @@ func (s *Session) publish(msg *ClientComMessage) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
 			log.Println("s.publish:", err, s.sid)
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
 	} else {
 		// Publish request received without attaching to topic first.
@@ -493,12 +520,19 @@ func (s *Session) hello(msg *ClientComMessage) {
 		}
 		params = map[string]interface{}{"ver": currentVersion, "build": store.GetAdapterName() + ":" + buildstamp}
 
+		// Set ua & platform in the beginning of the session.
+		// Don't change them later.
+		s.userAgent = msg.Hi.UserAgent
+		s.platf = msg.Hi.Platform
+		if s.platf == "" {
+			s.platf = platformFromUA(msg.Hi.UserAgent)
+		}
 	} else if msg.Hi.Version == "" || parseVersion(msg.Hi.Version) == s.ver {
-		// Save changed device ID or Lang.
+		// Save changed device ID or Lang. Platform cannot be changed.
 		if !s.uid.IsZero() {
 			if err := store.Devices.Update(s.uid, s.deviceID, &types.DeviceDef{
 				DeviceId: msg.Hi.DeviceID,
-				Platform: "",
+				Platform: s.platf,
 				LastSeen: msg.timestamp,
 				Lang:     msg.Hi.Lang,
 			}); err != nil {
@@ -514,7 +548,6 @@ func (s *Session) hello(msg *ClientComMessage) {
 		return
 	}
 
-	s.userAgent = msg.Hi.UserAgent
 	s.deviceID = msg.Hi.DeviceID
 	s.lang = msg.Hi.Lang
 
@@ -559,244 +592,12 @@ func (s *Session) acc(msg *ClientComMessage) {
 		}
 	}
 
-	authhdl := store.GetLogicalAuthHandler(msg.Acc.Scheme)
 	if strings.HasPrefix(msg.Acc.User, "new") {
 		// New account
-
-		// The session cannot authenticate with the new account because  it's already authenticated.
-		if msg.Acc.Login && !s.uid.IsZero() {
-			s.queueOut(ErrAlreadyAuthenticated(msg.id, "", msg.timestamp))
-			log.Println("s.acc: login requested while already authenticated", s.sid)
-			return
-		}
-
-		if authhdl == nil {
-			// New accounts must have an authentication scheme
-			s.queueOut(ErrMalformed(msg.id, "", msg.timestamp))
-			log.Println("s.acc: unknown auth handler", s.sid)
-			return
-		}
-
-		// Check if login is unique.
-		if ok, err := authhdl.IsUnique(msg.Acc.Secret); !ok {
-			log.Println("s.acc: auth secret is not unique", err, s.sid)
-			s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp,
-				map[string]interface{}{"what": "auth"}))
-			return
-		}
-
-		var user types.User
-		var private interface{}
-
-		// Assign default access values in case the acc creator has not provided them
-		user.Access.Auth = getDefaultAccess(types.TopicCatP2P, true)
-		user.Access.Anon = getDefaultAccess(types.TopicCatP2P, false)
-
-		if tags := normalizeTags(msg.Acc.Tags); tags != nil {
-			if !restrictedTagsEqual(tags, nil, globals.immutableTagNS) {
-				log.Println("a.acc: attempt to directly assign restricted tags", s.sid)
-				msg := ErrPermissionDenied(msg.id, "", msg.timestamp)
-				msg.Ctrl.Params = map[string]interface{}{"what": "tags"}
-				s.queueOut(msg)
-				return
-			}
-			user.Tags = tags
-		}
-
-		// Pre-check credentials for validity. We don't know user's access level
-		// consequently cannot check presence of required credentials. Must do that later.
-		creds := normalizeCredentials(msg.Acc.Cred, true)
-		for i := range creds {
-			cr := &creds[i]
-			vld := store.GetValidator(cr.Method)
-			if err := vld.PreCheck(cr.Value, cr.Params); err != nil {
-				log.Println("a.acc: failed credential pre-check", cr, err, s.sid)
-				s.queueOut(decodeStoreError(err, msg.Acc.Id, "", msg.timestamp,
-					map[string]interface{}{"what": cr.Method}))
-				return
-			}
-
-			if globals.validators[cr.Method].addToTags {
-				user.Tags = append(user.Tags, cr.Method+":"+cr.Value)
-			}
-		}
-
-		if msg.Acc.Desc != nil {
-			if msg.Acc.Desc.DefaultAcs != nil {
-				if msg.Acc.Desc.DefaultAcs.Auth != "" {
-					user.Access.Auth.UnmarshalText([]byte(msg.Acc.Desc.DefaultAcs.Auth))
-					user.Access.Auth &= types.ModeCP2P
-					if user.Access.Auth != types.ModeNone {
-						user.Access.Auth |= types.ModeApprove
-					}
-				}
-				if msg.Acc.Desc.DefaultAcs.Anon != "" {
-					user.Access.Anon.UnmarshalText([]byte(msg.Acc.Desc.DefaultAcs.Anon))
-					user.Access.Anon &= types.ModeCP2P
-					if user.Access.Anon != types.ModeNone {
-						user.Access.Anon |= types.ModeApprove
-					}
-				}
-			}
-			if !isNullValue(msg.Acc.Desc.Public) {
-				user.Public = msg.Acc.Desc.Public
-			}
-			if !isNullValue(msg.Acc.Desc.Private) {
-				private = msg.Acc.Desc.Private
-			}
-		}
-
-		if _, err := store.Users.Create(&user, private); err != nil {
-			log.Println("a.acc: failed to create user", err, s.sid)
-			s.queueOut(ErrUnknown(msg.id, "", msg.timestamp))
-			return
-		}
-
-		rec, err := authhdl.AddRecord(&auth.Rec{Uid: user.Uid()}, msg.Acc.Secret)
-		if err != nil {
-			log.Println("s.acc: add auth record failed", err, s.sid)
-			// Attempt to delete incomplete user record
-			store.Users.Delete(user.Uid(), false)
-			s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp, nil))
-			return
-		}
-
-		// When creating an account, the user must provide all required credentials.
-		// If any are missing, reject the request.
-		if len(creds) < len(globals.authValidators[rec.AuthLevel]) {
-			log.Println("s.acc: missing credentials; have:", creds, "want:", globals.authValidators[rec.AuthLevel], s.sid)
-			// Attempt to delete incomplete user record
-			store.Users.Delete(user.Uid(), false)
-			_, missing := stringSliceDelta(globals.authValidators[rec.AuthLevel], credentialMethods(creds))
-			s.queueOut(decodeStoreError(types.ErrPolicy, msg.id, "", msg.timestamp,
-				map[string]interface{}{"creds": missing}))
-			return
-		}
-
-		var validated []string
-		tmpToken, _, _ := store.GetLogicalAuthHandler("token").GenSecret(&auth.Rec{
-			Uid:       user.Uid(),
-			AuthLevel: auth.LevelNone,
-			Lifetime:  time.Hour * 24,
-			Features:  auth.FeatureNoLogin})
-		for i := range creds {
-			cr := &creds[i]
-			vld := store.GetValidator(cr.Method)
-			if err := vld.Request(user.Uid(), cr.Value, s.lang, cr.Response, tmpToken); err != nil {
-				log.Println("s.acc: failed to save or validate credential", err, s.sid)
-				// Delete incomplete user record.
-				store.Users.Delete(user.Uid(), false)
-				s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp,
-					map[string]interface{}{"what": cr.Method}))
-				return
-			}
-
-			if cr.Response != "" {
-				// If response is provided and Request did not return an error, the request was
-				// successfully validated.
-				validated = append(validated, cr.Method)
-			}
-		}
-
-		var reply *ServerComMessage
-		if msg.Acc.Login {
-			// Process user's login request.
-			_, missing := stringSliceDelta(globals.authValidators[rec.AuthLevel], validated)
-			reply = s.onLogin(msg.id, msg.timestamp, rec, missing)
-		} else {
-			// Not using the new account for logging in.
-			reply = NoErrCreated(msg.id, "", msg.timestamp)
-			reply.Ctrl.Params = map[string]interface{}{"user": user.Uid().UserId()}
-		}
-		params := reply.Ctrl.Params.(map[string]interface{})
-		params["desc"] = &MsgTopicDesc{
-			CreatedAt: &user.CreatedAt,
-			UpdatedAt: &user.UpdatedAt,
-			DefaultAcs: &MsgDefaultAcsMode{
-				Auth: user.Access.Auth.String(),
-				Anon: user.Access.Anon.String()},
-			Public:  user.Public,
-			Private: private}
-
-		s.queueOut(reply)
-
-		pluginAccount(&user, plgActCreate)
-
+		replyCreateUser(s, msg, rec)
 	} else {
 		// Existing account.
-
-		if s.uid.IsZero() && rec == nil {
-			// Session is not authenticated and no token provided.
-			log.Println("s.acc: not a new account and not authenticated", s.sid)
-			s.queueOut(ErrPermissionDenied(msg.id, "", msg.timestamp))
-			return
-		} else if msg.from != "" && rec != nil {
-			// Two UIDs: one from msg.from, one from token. Ambigous, reject.
-			log.Println("s.acc: got both authenticated session and token", s.sid)
-			s.queueOut(ErrMalformed(msg.id, "", msg.timestamp))
-			return
-		}
-
-		userId := msg.from
-		authLvl := auth.Level(msg.authLvl)
-		if rec != nil {
-			userId = rec.Uid.UserId()
-			authLvl = rec.AuthLevel
-		}
-		if msg.Acc.User != "" && msg.Acc.User != userId {
-			if s.authLvl != auth.LevelRoot {
-				log.Println("s.acc: attempt to change another's account by non-root", s.sid)
-				s.queueOut(ErrPermissionDenied(msg.id, "", msg.timestamp))
-				return
-			}
-			// Root is editing someone else's account.
-			userId = msg.Acc.User
-			authLvl = auth.ParseAuthLevel(msg.Acc.AuthLevel)
-		}
-
-		uid := types.ParseUserId(userId)
-		if uid.IsZero() || authLvl == auth.LevelNone {
-			// Either msg.Acc.User or msg.Acc.AuthLevel contains invalid data.
-			s.queueOut(ErrMalformed(msg.id, "", msg.timestamp))
-			log.Println("s.acc: either user id or auth level is missing", s.sid)
-			return
-		}
-
-		var params map[string]interface{}
-		if authhdl != nil {
-			// Request to update auth of an existing account. Only basic auth is currently supported
-			// TODO(gene): support adding new auth schemes
-			if err := authhdl.UpdateRecord(&auth.Rec{Uid: uid}, msg.Acc.Secret); err != nil {
-				log.Println("s.acc: failed to update auth secret", err, s.sid)
-				s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp, nil))
-				return
-			}
-		} else if msg.Acc.Scheme != "" {
-			// Invalid or unknown auth scheme
-			log.Println("s.acc: unknown auth scheme", msg.Acc.Scheme, s.sid)
-			s.queueOut(ErrMalformed(msg.id, "", msg.timestamp))
-			return
-		} else if len(msg.Acc.Cred) > 0 {
-			// Use provided credentials for validation.
-			validated, err := s.getValidatedGred(uid, authLvl, msg.Acc.Cred)
-			if err != nil {
-				log.Println("s.acc: failed to get validated credentials", err, s.sid)
-				s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp, nil))
-				return
-			}
-			_, missing := stringSliceDelta(globals.authValidators[authLvl], validated)
-			if len(missing) > 0 {
-				params = map[string]interface{}{"cred": missing}
-			}
-		}
-
-		resp := NoErr(msg.id, "", msg.timestamp)
-		resp.Ctrl.Params = params
-		s.queueOut(resp)
-
-		// TODO: Call plugin with the account update
-		// like pluginAccount(&types.User{}, plgActUpd)
-
+		replyUpdateUser(s, msg, rec)
 	}
 }
 
@@ -805,7 +606,7 @@ func (s *Session) login(msg *ClientComMessage) {
 	// msg.from is ignored here
 
 	if msg.Login.Scheme == "reset" {
-		s.queueOut(decodeStoreError(s.authSecretReset(msg.Login.Secret), msg.Login.Id, "", msg.timestamp, nil))
+		s.queueOut(decodeStoreError(s.authSecretReset(msg.Login.Secret), msg.id, "", msg.timestamp, nil))
 		return
 	}
 
@@ -816,7 +617,7 @@ func (s *Session) login(msg *ClientComMessage) {
 
 	handler := store.GetLogicalAuthHandler(msg.Login.Scheme)
 	if handler == nil {
-		log.Println("Unknown authentication scheme", msg.Login.Scheme)
+		log.Println("s.login: unknown authentication scheme", msg.Login.Scheme, s.sid)
 		s.queueOut(ErrAuthUnknownScheme(msg.id, "", msg.timestamp))
 		return
 	}
@@ -835,13 +636,14 @@ func (s *Session) login(msg *ClientComMessage) {
 
 	var missing []string
 	if rec.Features&auth.FeatureValidated == 0 {
-		missing, err = s.getValidatedGred(rec.Uid, rec.AuthLevel, msg.Login.Cred)
-		if err == nil {
-			_, missing = stringSliceDelta(globals.authValidators[rec.AuthLevel], missing)
+		var validated []string
+		if validated, err = s.getValidatedGred(rec.Uid, rec.AuthLevel, msg.Login.Cred); err == nil {
+			// Get a list of credentials which have not been validated.
+			_, missing = stringSliceDelta(globals.authValidators[rec.AuthLevel], validated)
 		}
 	}
 	if err != nil {
-		log.Println("failed to validate credentials", err)
+		log.Println("s.login: failed to validate credentials", err, s.sid)
 		s.queueOut(decodeStoreError(err, msg.id, "", msg.timestamp, nil))
 	} else {
 		s.queueOut(s.onLogin(msg.id, msg.timestamp, rec, missing))
@@ -858,7 +660,7 @@ func (s *Session) authSecretReset(params []byte) error {
 		return types.ErrMalformed
 	}
 
-	// Tehnically we don't need to check it here, but we are going to mail the 'authName' string to the user.
+	// Technically we don't need to check it here, but we are going to mail the 'authName' string to the user.
 	// We have to make sure it does not contain any exploits. This is the simplest check.
 	if hdl := store.GetLogicalAuthHandler(authScheme); hdl == nil {
 		return types.ErrUnsupported
@@ -884,7 +686,7 @@ func (s *Session) authSecretReset(params []byte) error {
 	if err != nil {
 		return err
 	}
-	log.Println("calling validator.ResetSecret", credValue, authScheme, uid)
+
 	return validator.ResetSecret(credValue, authScheme, s.lang, token)
 }
 
@@ -917,9 +719,11 @@ func (s *Session) onLogin(msgID string, timestamp time.Time, rec *auth.Rec, miss
 		}
 		features |= auth.FeatureValidated
 
+		// If authenticator provided updated tags, use them to update the user.
 		if len(rec.Tags) > 0 {
-			if err := store.Users.Update(rec.Uid,
-				map[string]interface{}{"Tags": normalizeTags(rec.Tags)}); err != nil {
+			log.Println("Resetting user's tags", normalizeTags(rec.Tags))
+
+			if err := store.Users.UpdateTags(rec.Uid, normalizeTags(rec.Tags), true); err != nil {
 
 				log.Println("failed to update user's tags", err)
 			}
@@ -929,7 +733,7 @@ func (s *Session) onLogin(msgID string, timestamp time.Time, rec *auth.Rec, miss
 		if s.deviceID != "" {
 			if err := store.Devices.Update(rec.Uid, "", &types.DeviceDef{
 				DeviceId: s.deviceID,
-				Platform: platformFromUA(s.userAgent),
+				Platform: s.platf,
 				LastSeen: timestamp,
 				Lang:     s.lang,
 			}); err != nil {
@@ -971,6 +775,7 @@ func (s *Session) getValidatedGred(uid types.Uid, authLvl auth.Level, creds []Ms
 	// Add credentials which are validated in this call.
 	// Unknown validators are removed.
 	creds = normalizeCredentials(creds, false)
+	var tags []string
 	for i := range creds {
 		cr := &creds[i]
 		if cr.Response == "" {
@@ -978,7 +783,8 @@ func (s *Session) getValidatedGred(uid types.Uid, authLvl auth.Level, creds []Ms
 			continue
 		}
 		vld := store.GetValidator(cr.Method)
-		if err := vld.Check(uid, cr.Response); err != nil {
+		value, err := vld.Check(uid, cr.Response)
+		if err != nil {
 			// Check failed.
 			if storeErr, ok := err.(types.StoreError); ok && storeErr == types.ErrCredentials {
 				// Just an invalid response. Keep credential unvalidated.
@@ -987,8 +793,21 @@ func (s *Session) getValidatedGred(uid types.Uid, authLvl auth.Level, creds []Ms
 			// Actual error. Report back.
 			return nil, err
 		}
+
 		// Check did not return an error: the request was successfully validated.
 		validated = append(validated, cr.Method)
+
+		// Add validated credential to user's tags.
+		if globals.validators[cr.Method].addToTags {
+			tags = append(tags, cr.Method+":"+value)
+		}
+	}
+
+	if len(tags) > 0 {
+		// Save update to tags
+		if err := store.Users.UpdateTags(uid, tags, false); err != nil {
+			return nil, err
+		}
 	}
 
 	return validated, nil
@@ -996,9 +815,9 @@ func (s *Session) getValidatedGred(uid types.Uid, authLvl auth.Level, creds []Ms
 
 func (s *Session) get(msg *ClientComMessage) {
 	// Expand topic name.
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
-		s.queueOut(err)
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		s.queueOut(resp)
 		return
 	}
 
@@ -1017,70 +836,81 @@ func (s *Session) get(msg *ClientComMessage) {
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
-	} else if meta.what&(constMsgMetaData|constMsgMetaSub|constMsgMetaDel) != 0 {
+	} else if meta.what&(constMsgMetaData|constMsgMetaDel|constMsgMetaTags) != 0 {
 		log.Println("s.get: subscribe first to get=", msg.Get.What)
 		s.queueOut(ErrPermissionDenied(msg.id, msg.topic, msg.timestamp))
 	} else {
-		// Description of a topic not currently subscribed to. Request desc from the hub
+		// Request some minimal info from a topic not currently attached to.
 		globals.hub.meta <- meta
 	}
 }
 
 func (s *Session) set(msg *ClientComMessage) {
 	// Expand topic name.
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
-		s.queueOut(err)
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		s.queueOut(resp)
 		return
 	}
 
-	if sub := s.getSub(expanded); sub != nil {
-		meta := &metaReq{
-			topic: expanded,
-			pkt:   msg,
-			sess:  s}
+	meta := &metaReq{
+		topic: expanded,
+		pkt:   msg,
+		sess:  s}
 
-		if msg.Set.Desc != nil {
-			meta.what = constMsgMetaDesc
-		}
-		if msg.Set.Sub != nil {
-			meta.what |= constMsgMetaSub
-		}
-		if msg.Set.Tags != nil {
-			meta.what |= constMsgMetaTags
-		}
-		if meta.what == 0 {
-			s.queueOut(ErrMalformed(msg.id, msg.topic, msg.timestamp))
-			log.Println("s.set: nil Set action")
-		}
+	if msg.Set.Desc != nil {
+		meta.what = constMsgMetaDesc
+	}
+	if msg.Set.Sub != nil {
+		meta.what |= constMsgMetaSub
+	}
+	if msg.Set.Tags != nil {
+		meta.what |= constMsgMetaTags
+	}
 
+	if meta.what == 0 {
+		s.queueOut(ErrMalformed(msg.id, msg.topic, msg.timestamp))
+		log.Println("s.set: nil Set action")
+	} else if sub := s.getSub(expanded); sub != nil {
 		sub.meta <- meta
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
-	} else {
-		log.Println("s.set: can Set for subscribed topics only")
+	} else if meta.what&constMsgMetaTags != 0 {
+		log.Println("s.set: can Set tags for subscribed topics only")
 		s.queueOut(ErrPermissionDenied(msg.id, msg.topic, msg.timestamp))
+	} else {
+		// Some minor updates are possible without the subscription.
+		globals.hub.meta <- meta
 	}
 }
 
 func (s *Session) del(msg *ClientComMessage) {
+	what := parseMsgClientDel(msg.Del.What)
 
-	// Expand topic name and validate request.
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
-		s.queueOut(err)
+	// Delete user
+	if what == constMsgDelUser {
+		replyDelUser(s, msg)
 		return
 	}
 
-	what := parseMsgClientDel(msg.Del.What)
+	// Delete something other than user: topic, subscription, message(s)
+
+	// Expand topic name and validate request.
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		s.queueOut(resp)
+		return
+	}
+
 	if what == 0 {
 		s.queueOut(ErrMalformed(msg.id, msg.topic, msg.timestamp))
-		log.Println("s.del: invalid Del action", msg.Del.What)
+		log.Println("s.del: invalid Del action", msg.Del.What, s.sid)
+		return
 	}
 
 	sub := s.getSub(expanded)
@@ -1095,7 +925,7 @@ func (s *Session) del(msg *ClientComMessage) {
 	} else if sub == nil && globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
 		if err := globals.cluster.routeToTopic(msg, expanded, s); err != nil {
-			s.queueOut(ErrClusterNodeUnreachable(msg.id, msg.topic, msg.timestamp))
+			s.queueOut(ErrClusterUnreachable(msg.id, msg.topic, msg.timestamp))
 		}
 	} else if what == constMsgDelTopic {
 		// Deleting topic: for sessions attached or not attached, send request to hub first.
@@ -1108,7 +938,7 @@ func (s *Session) del(msg *ClientComMessage) {
 	} else {
 		// Must join the topic to delete messages or subscriptions.
 		s.queueOut(ErrAttachFirst(msg.id, msg.topic, msg.timestamp))
-		log.Println("s.del: invalid Del action while unsubbed", msg.Del.What)
+		log.Println("s.del: invalid Del action while unsubbed", msg.Del.What, s.sid)
 	}
 }
 
@@ -1122,8 +952,8 @@ func (s *Session) note(msg *ClientComMessage) {
 	}
 
 	// Expand topic name and validate request.
-	expanded, err := s.expandTopicName(msg)
-	if err != nil {
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
 		// Silently ignoring the message
 		return
 	}
@@ -1163,6 +993,7 @@ func (s *Session) note(msg *ClientComMessage) {
 func (s *Session) expandTopicName(msg *ClientComMessage) (string, *ServerComMessage) {
 
 	if msg.topic == "" {
+		log.Println("s.etn: empty topic name", s.sid)
 		return "", ErrMalformed(msg.id, "", msg.timestamp)
 	}
 
@@ -1178,9 +1009,11 @@ func (s *Session) expandTopicName(msg *ClientComMessage) (string, *ServerComMess
 		uid2 := types.ParseUserId(msg.topic)
 		if uid2.IsZero() {
 			// Ensure the user id is valid
+			log.Println("s.etn: failed to parse p2p topic name", s.sid)
 			return "", ErrMalformed(msg.id, msg.topic, msg.timestamp)
 		} else if uid2 == uid1 {
 			// Use 'me' to access self-topic
+			log.Println("s.etn: invalid p2p self-subscription", s.sid)
 			return "", ErrPermissionDenied(msg.id, msg.topic, msg.timestamp)
 		}
 		routeTo = uid1.P2PName(uid2)
@@ -1189,25 +1022,6 @@ func (s *Session) expandTopicName(msg *ClientComMessage) (string, *ServerComMess
 	}
 
 	return routeTo, nil
-}
-
-// SerialFormat is an enum of possible serialization formats.
-type SerialFormat int
-
-const (
-	// FmtNONE undefined format
-	FmtNONE SerialFormat = iota
-	// FmtJSON JSON format
-	FmtJSON
-	// FmtPROTO Protobuffer format
-	FmtPROTO
-)
-
-func (s *Session) getSerialFormat() SerialFormat {
-	if s.proto == GRPC {
-		return FmtPROTO
-	}
-	return FmtJSON
 }
 
 func (s *Session) serialize(msg *ServerComMessage) interface{} {

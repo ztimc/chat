@@ -13,10 +13,10 @@
     "text": "DND"
    },
    "username": "alice",
-	"addressBook": ["email:bob@example.com", "email:carol@example.com", "email:dave@example.com",
-		"email:eve@example.com","email:frank@example.com","email:george@example.com","email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:bob@example.com", "email:carol@example.com", "email:dave@example.com",
+      "email:eve@example.com","email:frank@example.com","email:george@example.com","email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-139h",
@@ -28,10 +28,10 @@
    "state": 1,
    "status": "stuff",
    "username": "bob",
-	"addressBook": ["email:alice@example.com", "email:carol@example.com", "email:dave@example.com",
-		"email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:alice@example.com", "email:carol@example.com", "email:dave@example.com",
+      "email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-138h",
@@ -43,10 +43,10 @@
    "state": 1,
    "status": "ho ho ho",
    "username": "carol",
-	"addressBook": ["email:alice@example.com", "email:bob@example.com", "email:dave@example.com",
-		"email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:alice@example.com", "email:bob@example.com", "email:dave@example.com",
+      "email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-137h",
@@ -58,10 +58,10 @@
    "state": 1,
    "status": "hiding!",
    "username": "dave",
-	"addressBook": ["email:alice@example.com", "email:bob@example.com", "email:carol@example.com",
-		"email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:alice@example.com", "email:bob@example.com", "email:carol@example.com",
+      "email:eve@example.com", "email:frank@example.com", "email:george@example.com", "email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-136h",
@@ -72,10 +72,10 @@
    "public": {"fn": "Eve Adams", "photo": "eve-64.jpg", "type": "jpg"},
    "state": 1,
    "username": "eve",
-	"addressBook": ["email:alice@example.com", "email:bob@example.com", "email:carol@example.com",
-		"email:dave@example.com", "email:george@example.com", "email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:alice@example.com", "email:bob@example.com", "email:carol@example.com",
+      "email:dave@example.com", "email:george@example.com", "email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550006", "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-135h",
@@ -87,10 +87,10 @@
    "state": 2,
    "status": "singing!",
    "username": "frank",
-	"addressBook": ["email:bob@example.com", "email:carol@example.com", "email:dave@example.com",
-		"email:eve@example.com", "email:george@example.com", "email:tino@example.com",
-		"tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
-		"tel:17025550007", "tel:17025550008", "tel:17025550009"]
+   "addressBook": ["email:bob@example.com", "email:carol@example.com", "email:dave@example.com",
+      "email:eve@example.com", "email:george@example.com", "email:tino@example.com",
+      "tel:17025550001", "tel:17025550002", "tel:17025550003", "tel:17025550004", "tel:17025550005",
+      "tel:17025550007", "tel:17025550008", "tel:17025550009"]
   },
   {
    "createdAt": "-134h",
@@ -111,9 +111,9 @@
    "passhash": "xena123",
    "authLevel": "root",
    "private": {"comment": "No one knowns that Xena exists"},
-   "public": {"fn": "Xena Pacifist Peasant"},
+   "public": {"fn": "Xena Pacifist Peasant", "photo": "xena-128.jpg", "type": "jpg"},
    "state": 1,
-   "status": "Just a simple peaceful person",
+   "status": "Just a simple peaceful agriculture specialist",
    "username": "xena",
    "addressBook": []
   }
@@ -157,7 +157,7 @@
   },
   {
    "createdAt": "-119h",
-	"users": [{"name": "alice"}, {"name": "carol", "private": {"comment": "Alice Joha"}}]
+   "users": [{"name": "alice"}, {"name": "carol", "private": {"comment": "Alice Joha"}}]
   },
   {
    "createdAt": "-118h",
@@ -315,5 +315,34 @@
   "Outlook not so good",
   "Very doubtful",
   "All your base are belong to us"
- ]
+ ],
+"forms": [
+  {
+    "txt": "Post responseYesДа",
+    "fmt": [
+      {"at": 0, "len": 18, "tp": "FM"},
+      {"at": 0, "len": 13, "tp": "ST"},
+      {"at": 13, "len": 3, "key": 0},
+      {"at": 16, "len": 2, "key": 1}
+    ],
+    "ent": [
+      {"tp": "BN", "data": {"name": "yes", "act": "pub"}},
+      {"tp": "BN", "data": {"name": "yes2", "act": "pub"}}
+    ]
+  },
+  {
+    "txt": "Go to URL:Yes OK",
+    "fmt": [
+      {"at": 0, "len": 16, "tp": "FM"},
+      {"at": 0, "len": 10, "tp": "ST"},
+      {"at": 10, "len": 6, "tp": "RW"},
+      {"at": 10, "len": 3, "key": 0},
+      {"at": 14, "len": 2, "key": 1}
+    ],
+    "ent": [
+      {"tp": "BN", "data": {"name": "ok", "act": "url", "ref": "https://github.com/tinode/chat/?key=val"}},
+      {"tp": "BN", "data": {"name": "ok2", "act": "url", "ref": "https://github.com/tinode/chat"}}
+    ]
+  }
+]
 }

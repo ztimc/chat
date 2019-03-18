@@ -16,7 +16,7 @@
 	./tinode
 	```
 
-5. Test your installation by pointing your browser to http://localhost:6060/x/
+5. Test your installation by pointing your browser to http://localhost:6060/
 
 
 ## Docker
@@ -60,16 +60,21 @@ See [instructions](./docker/README.md)
 ```
 
 5. Download javascript client for testing:
- - https://github.com/tinode/example-react-js/archive/master.zip
+ - https://github.com/tinode/webapp/archive/master.zip
  - https://github.com/tinode/tinode-js/archive/master.zip
 
-6. Now that you have built the binaries, follow instructions in the previous section for running the binaries.
+6. Now that you have built the binaries, follow instructions in the _Installing from Binaries_ section for running the binaries except in step 3 the initializer is called `tinode-db` (`tinode-db.exe` on Windows), not `init-db`.
 
 ## Running a Standalone Server
 
-1. Run RethinkDB:
+1. Make sure your database is running:
+ - **RethinkDB**: https://www.rethinkdb.com/docs/start-a-server/
 	```
 	rethinkdb --bind all --daemon
+	```
+ - **MySQL**: https://dev.mysql.com/doc/mysql-startstop-excerpt/5.7/en/programs-server.html
+	```
+	mysql.server start
 	```
 
 2. Run DB initializer
@@ -83,7 +88,7 @@ See [instructions](./docker/README.md)
 
 	DB intializer needs to be run only once per installation. See [instructions](tinode-db/README.md) for more options.
 
-3. Unpack JS client to a directory, for instance `$HOME/tinode/example-react-js/` by first unzipping `https://github.com/tinode/example-react-js/archive/master.zip` then extract `tinode.js` from `https://github.com/tinode/tinode-js/archive/master.zip` to the same directory.
+3. Unpack JS client to a directory, for instance `$HOME/tinode/example-react-js/` by first unzipping `https://github.com/tinode/webapp/archive/master.zip` then extract `tinode.js` from `https://github.com/tinode/tinode-js/archive/master.zip` to the same directory.
 
 4. Run server
 	```
@@ -92,7 +97,7 @@ See [instructions](./docker/README.md)
 
 5. Test your installation by pointing your browser to [http://localhost:6060/](http://localhost:6060/). The static files from the `-static_data` path are served at web root `/`. You can change this by editing the line `static_mount` in the config file.
 
-6.  If you want to use the [Android client](https://github.com/tinode/android-example) and want push notification to work, find the section `"push"` in `tinode.conf`, item `"name": "fcm"`, then change `"enabled"` to `true`. Go to [https://console.firebase.google.com/](https://console.firebase.google.com/) (https://console.firebase.google.com/project/**NAME-OF-YOUR-PROJECT**/settings/cloudmessaging) and get a server key. Paste the key to the `"api_key"` field. See more at [https://github.com/tinode/android-example](https://github.com/tinode/android-example).
+6.  If you want to use the [Android client](https://github.com/tinode/tindroid) and want push notification to work, find the section `"push"` in `tinode.conf`, item `"name": "fcm"`, then change `"enabled"` to `true`. Go to [https://console.firebase.google.com/](https://console.firebase.google.com/) (https://console.firebase.google.com/project/**NAME-OF-YOUR-PROJECT**/settings/cloudmessaging) and get a server key. Paste the key to the `"api_key"` field. See more at https://github.com/tinode/tindroid.
 
 ## Running a Cluster
 
@@ -142,8 +147,8 @@ There is [no clean way](https://github.com/golang/go/issues/227) to daemonize a 
 Specific note for [nohup](https://en.wikipedia.org/wiki/Nohup) users: an `exit` must be issued immediately after `nohup` call to close the foreground session cleanly:
 
 ```
-> nohup $GOPATH/bin/server -config=$GOPATH/src/github.com/tinode/chat/server/tinode.conf -static_data=$HOME/tinode/example-react-js/ &
-> exit
+nohup $GOPATH/bin/server -config=$GOPATH/src/github.com/tinode/chat/server/tinode.conf -static_data=$HOME/tinode/example-react-js/ &
+exit
 ```
 
 Otherwise `SIGHUP` may be received by the server if the shell connection is broken before the ssh session has terminated (indicated by `Connection to XXX.XXX.XXX.XXX port 22: Broken pipe`). In such a case the server will shutdown because `SIGHUP` is intercepted by the server and interpreted as a shutdown request.

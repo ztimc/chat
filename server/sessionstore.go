@@ -1,8 +1,8 @@
 /******************************************************************************
  *
- *  Description :
+ *  Description:
  *
- *  Management of long polling sessions
+ *  Session management.
  *
  *****************************************************************************/
 
@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tinode/chat/pbx"
 	"github.com/tinode/chat/server/store"
+	"github.com/tinode/chat/server/store/types"
 )
 
 // SessionStore holds live sessions. Long polling sessions are stored in a linked list with
@@ -100,6 +101,9 @@ func (ss *SessionStore) NewSession(conn interface{}, sid string) (*Session, int)
 		sess.cleanUp(true)
 	}
 
+	statsSet("LiveSessions", int64(len(ss.sessCache)))
+	statsInc("TotalSessions", 1)
+
 	return &s, count
 }
 
@@ -121,7 +125,7 @@ func (ss *SessionStore) Get(sid string) *Session {
 }
 
 // Delete removes session from store.
-func (ss *SessionStore) Delete(s *Session) int {
+func (ss *SessionStore) Delete(s *Session) {
 	ss.lock.Lock()
 	defer ss.lock.Unlock()
 
@@ -129,7 +133,8 @@ func (ss *SessionStore) Delete(s *Session) int {
 	if s.proto == LPOLL {
 		ss.lru.Remove(s.lpTracker)
 	}
-	return len(ss.sessCache)
+
+	statsSet("LiveSessions", int64(len(ss.sessCache)))
 }
 
 // Shutdown terminates sessionStore. No need to clean up.
@@ -138,7 +143,7 @@ func (ss *SessionStore) Shutdown() {
 	ss.lock.Lock()
 	defer ss.lock.Unlock()
 
-	shutdown := NoErrShutdown(time.Now().UTC().Round(time.Millisecond))
+	shutdown := NoErrShutdown(types.TimeNow())
 	for _, s := range ss.sessCache {
 		if s.stop != nil && s.proto != CLUSTER {
 			s.stop <- s.serialize(shutdown)
@@ -146,6 +151,25 @@ func (ss *SessionStore) Shutdown() {
 	}
 
 	log.Printf("SessionStore shut down, sessions terminated: %d", len(ss.sessCache))
+}
+
+// EvictUser terminates all sessions of a given user.
+func (ss *SessionStore) EvictUser(uid types.Uid, skipSid string) {
+	ss.lock.Lock()
+	defer ss.lock.Unlock()
+
+	evicted := NoErrEvicted("", "", types.TimeNow())
+	for _, s := range ss.sessCache {
+		if s.uid == uid && s.stop != nil && s.sid != skipSid {
+			s.stop <- s.serialize(evicted)
+			delete(ss.sessCache, s.sid)
+			if s.proto == LPOLL {
+				ss.lru.Remove(s.lpTracker)
+			}
+		}
+	}
+
+	statsSet("LiveSessions", int64(len(ss.sessCache)))
 }
 
 // NewSessionStore initializes a session store.
@@ -156,6 +180,9 @@ func NewSessionStore(lifetime time.Duration) *SessionStore {
 
 		sessCache: make(map[string]*Session),
 	}
+
+	statsRegisterInt("LiveSessions")
+	statsRegisterInt("TotalSessions")
 
 	return ss
 }

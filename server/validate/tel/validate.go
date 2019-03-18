@@ -91,6 +91,7 @@ func (*validator) ResetSecret(cred, scheme, lang string, tmpToken []byte) error 
 
 // Check checks validity of user's response.
 func (*validator) Check(user t.Uid, resp string) (string, error) {
+<<<<<<< HEAD
 	cred, err := store.Users.GetCred(user, "tel")
 
 	if err != nil {
@@ -115,6 +116,10 @@ func (*validator) Check(user t.Uid, resp string) (string, error) {
 	_ = store.Users.FailCred(user, "tel")
 
 	return "", t.ErrCredentials
+=======
+	// TODO: check response against a database.
+	return "", nil
+>>>>>>> upstream/master
 }
 
 // Delete deletes user's records. Returns deleted credentials.

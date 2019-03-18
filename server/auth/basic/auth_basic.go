@@ -1,7 +1,6 @@
 package basic
 
-// This handler must be kept in a separate package because it's referenced by
-// tinode-db
+// Authentication by login-password.
 
 import (
 	"encoding/json"
@@ -16,15 +15,37 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// Define default constraints on login and password
 const (
-	// Define constraints on login
-	minLoginLength = 1
-	maxLoginLength = 32
+	defaultMinLoginLength = 1
+	defaultMaxLoginLength = 32
+
+	defaultMinPasswordLength = 3
 )
 
-// BasicAuth is the type to map authentication methods to.
+// authenticator is the type to map authentication methods to.
 type authenticator struct {
+	name      string
 	addToTags bool
+
+	minPasswordLength int
+	minLoginLength    int
+}
+
+func (a *authenticator) checkLoginPolicy(uname string) error {
+	if len([]rune(uname)) < a.minLoginLength || len([]rune(uname)) > defaultMaxLoginLength {
+		return types.ErrPolicy
+	}
+
+	return nil
+}
+
+func (a *authenticator) checkPasswordPolicy(password string) error {
+	if len([]rune(password)) < a.minPasswordLength {
+		return types.ErrPolicy
+	}
+
+	return nil
 }
 
 func parseSecret(bsecret []byte) (uname, password string, err error) {
@@ -42,16 +63,36 @@ func parseSecret(bsecret []byte) (uname, password string, err error) {
 }
 
 // Init initializes the basic authenticator.
-func (a *authenticator) Init(jsonconf string) error {
-	type configType struct {
-		//
-		AddToTags bool `json:"add_to_tags"`
+func (a *authenticator) Init(jsonconf, name string) error {
+	if a.name != "" {
+		return errors.New("auth_basic: already initialized as " + a.name + "; " + name)
 	}
+
+	type configType struct {
+		// AddToTags indicates that the user name should be used as a searchable tag.
+		AddToTags         bool `json:"add_to_tags"`
+		MinPasswordLength int  `json:"min_password_length"`
+		MinLoginLength    int  `json:"min_login_length"`
+	}
+
 	var config configType
 	if err := json.Unmarshal([]byte(jsonconf), &config); err != nil {
 		return errors.New("auth_basic: failed to parse config: " + err.Error() + "(" + jsonconf + ")")
 	}
+	a.name = name
 	a.addToTags = config.AddToTags
+	a.minPasswordLength = config.MinPasswordLength
+	if a.minPasswordLength <= 0 {
+		a.minPasswordLength = defaultMinPasswordLength
+	}
+	a.minLoginLength = config.MinLoginLength
+	if a.minLoginLength > defaultMaxLoginLength {
+		return errors.New("auth_basic: min_login_length exceeds the limit")
+	}
+	if a.minLoginLength <= 0 {
+		a.minLoginLength = defaultMinLoginLength
+	}
+
 	return nil
 }
 
@@ -62,8 +103,12 @@ func (a *authenticator) AddRecord(rec *auth.Rec, secret []byte) (*auth.Rec, erro
 		return nil, err
 	}
 
-	if len([]rune(uname)) < minLoginLength || len([]rune(uname)) > maxLoginLength {
-		return nil, types.ErrPolicy
+	if err = a.checkLoginPolicy(uname); err != nil {
+		return nil, err
+	}
+
+	if err = a.checkPasswordPolicy(password); err != nil {
+		return nil, err
 	}
 
 	passhash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -80,7 +125,7 @@ func (a *authenticator) AddRecord(rec *auth.Rec, secret []byte) (*auth.Rec, erro
 		authLevel = auth.LevelAuth
 	}
 
-	dup, err := store.Users.AddAuthRecord(rec.Uid, authLevel, "basic", uname, passhash, expires)
+	dup, err := store.Users.AddAuthRecord(rec.Uid, authLevel, a.name, uname, passhash, expires)
 	if dup {
 		return nil, types.ErrDuplicate
 	} else if err != nil {
@@ -89,57 +134,74 @@ func (a *authenticator) AddRecord(rec *auth.Rec, secret []byte) (*auth.Rec, erro
 
 	rec.AuthLevel = authLevel
 	if a.addToTags {
-		rec.Tags = []string{"basic:" + uname}
+		rec.Tags = append(rec.Tags, a.name+":"+uname)
 	}
 	return rec, nil
 }
 
 // UpdateRecord updates password for basic authentication.
-func (authenticator) UpdateRecord(rec *auth.Rec, secret []byte) error {
+func (a *authenticator) UpdateRecord(rec *auth.Rec, secret []byte) (*auth.Rec, error) {
 	uname, password, err := parseSecret(secret)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	login, _, _, _, err := store.Users.GetAuthRecord(rec.Uid, "basic")
+	login, _, _, _, err := store.Users.GetAuthRecord(rec.Uid, a.name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// User does not have a record.
 	if login == "" {
-		return types.ErrNotFound
+		return nil, types.ErrNotFound
 	}
-	if uname == "" {
+
+	if uname == "" || uname == login {
 		// User is changing just the password.
 		uname = login
+	} else if err = a.checkLoginPolicy(uname); err != nil {
+		return nil, err
 	}
+
+	if err = a.checkPasswordPolicy(password); err != nil {
+		return nil, err
+	}
+
 	passhash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return types.ErrInternal
+		return nil, types.ErrInternal
 	}
 	var expires time.Time
 	if rec.Lifetime > 0 {
 		expires = types.TimeNow().Add(rec.Lifetime)
 	}
-	_, err = store.Users.UpdateAuthRecord(rec.Uid, auth.LevelAuth, "basic", uname, passhash, expires)
+	_, err = store.Users.UpdateAuthRecord(rec.Uid, auth.LevelAuth, a.name, uname, passhash, expires)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+
+	// Remove old tag from the list of tags
+	oldTag := a.name + ":" + login
+	for i, tag := range rec.Tags {
+		if tag == oldTag {
+			rec.Tags[i] = rec.Tags[len(rec.Tags)-1]
+			rec.Tags = rec.Tags[:len(rec.Tags)-1]
+			break
+		}
+	}
+	// Add new tag
+	rec.Tags = append(rec.Tags, a.name+":"+uname)
+
+	return rec, nil
 }
 
 // Authenticate checks login and password.
-func (authenticator) Authenticate(secret []byte) (*auth.Rec, []byte, error) {
+func (a *authenticator) Authenticate(secret []byte) (*auth.Rec, []byte, error) {
 	uname, password, err := parseSecret(secret)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if len([]rune(uname)) < minLoginLength || len([]rune(uname)) > maxLoginLength {
-		return nil, nil, types.ErrFailed
-	}
-
-	uid, authLvl, passhash, expires, err := store.Users.GetAuthUniqueRecord("basic", uname)
+	uid, authLvl, passhash, expires, err := store.Users.GetAuthUniqueRecord(a.name, uname)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -170,17 +232,17 @@ func (authenticator) Authenticate(secret []byte) (*auth.Rec, []byte, error) {
 }
 
 // IsUnique checks login uniqueness.
-func (authenticator) IsUnique(secret []byte) (bool, error) {
+func (a *authenticator) IsUnique(secret []byte) (bool, error) {
 	uname, _, err := parseSecret(secret)
 	if err != nil {
 		return false, err
 	}
 
-	if len([]rune(uname)) < minLoginLength || len([]rune(uname)) > maxLoginLength {
-		return false, types.ErrPolicy
+	if err := a.checkLoginPolicy(uname); err != nil {
+		return false, err
 	}
 
-	uid, _, _, _, err := store.Users.GetAuthUniqueRecord("basic", uname)
+	uid, _, _, _, err := store.Users.GetAuthUniqueRecord(a.name, uname)
 	if err != nil {
 		return false, err
 	}
@@ -196,8 +258,8 @@ func (authenticator) GenSecret(rec *auth.Rec) ([]byte, time.Time, error) {
 	return nil, time.Time{}, types.ErrUnsupported
 }
 
-func (authenticator) DelRecords(uid types.Uid) error {
-	return store.Users.DelAuthRecords(uid, "basic")
+func (a *authenticator) DelRecords(uid types.Uid) error {
+	return store.Users.DelAuthRecords(uid, a.name)
 }
 
 func init() {

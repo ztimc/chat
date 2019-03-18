@@ -45,6 +45,9 @@ ENV AWS_CORS_ORIGINS='["*"]'
 # Default externally-visible hostname for email verification.
 ENV SMTP_HOST_URL='http://localhost:6060'
 
+# Whitelist of permitted email domains for email verification (empty list means all domains are permitted)
+ENV SMTP_DOMAINS=''
+
 # Various encryption and salt keys. Replace with your own in production.
 
 # Salt used to generate the API key. Don't change it unless you also change the
@@ -63,12 +66,13 @@ ENV TLS_ENABLED=false
 # Disable push notifications by default.
 ENV FCM_PUSH_ENABLED=false
 
-# Install root certificates. Needed for email validator to work
-# with the TLS SMTP servers like Gmail.
-RUN apk update && apk add --no-cache ca-certificates
+# Enable Android-specific notifications by default.
+ENV FCM_INCLUDE_ANDROID_NOTIFICATION=true
 
-# Adding bash and grep as they are used here.
-RUN apk add --no-cache bash grep
+# Install root certificates, they are needed for email validator to work
+# with the TLS SMTP servers like Gmail. Also add bash and grep.
+RUN apk update && \
+	apk add --no-cache ca-certificates bash grep
 
 WORKDIR /opt/tinode
 

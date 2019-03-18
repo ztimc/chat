@@ -1,11 +1,13 @@
 {
 	"listen": ":18080",
+	"cache_control": 39600,
 	"static_mount": "/",
 	"grpc_listen": ":16061",
 	"api_key_salt": "$API_KEY_SALT",
 	"max_message_size": 4194304,
 	"max_subscriber_count": 32,
 	"max_tag_count": 16,
+	"expvar": "",
 
 	"media": {
 		"use_handler": "$MEDIA_HANDLER",
@@ -40,7 +42,9 @@
 	"auth_config": {
 		"logical_names": [],
 		"basic": {
-			"add_to_tags": true
+			"add_to_tags": true,
+			"min_login_length": 3,
+			"min_password_length": 6
 		},
 		"token": {
 			"expire_in": 1209600,
@@ -54,7 +58,7 @@
 		"adapters": {
 			"mysql": {
 				"database": "tinode",
-				"dsn": "$MYSQL_DSN?parseTime=true"
+				"dsn": "$MYSQL_DSN?parseTime=true&collation=utf8mb4_unicode_ci"
 			},
 			"rethinkdb": {
 				"database": "tinode",
@@ -79,6 +83,7 @@
 				"reset_subject": "Reset Tinode password",
 				"headers": [],
 				"max_retries": 4,
+				"domains": [$SMTP_DOMAINS],
 				"debug_response": "$DEBUG_EMAIL_VERIFICATION_CODE"
 			}
 		},
@@ -102,6 +107,7 @@
 				"project_id": "$FCM_PROJECT_ID",
 				"credentials_file": "$FCM_CRED_FILE",
 				"time_to_live": 3600,
+				"include_android_notification": $FCM_INCLUDE_ANDROID_NOTIFICATION,
 				"icon": "ic_logo_push",
 				"icon_color": "#3949AB"
 			}

@@ -13,10 +13,10 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,42 +26,9 @@ import (
 
 	"github.com/tinode/chat/server/store"
 	"github.com/tinode/chat/server/store/types"
-
-	"golang.org/x/crypto/acme/autocert"
 )
 
-type tlsConfig struct {
-	// Flag enabling TLS
-	Enabled bool `json:"enabled"`
-	// Listen on port 80 and redirect plain HTTP to HTTPS
-	RedirectHTTP string `json:"http_redirect"`
-	// Enable Strict-Transport-Security by setting max_age > 0
-	StrictMaxAge int `json:"strict_max_age"`
-	// ACME autocert config, e.g. letsencrypt.org
-	Autocert *tlsAutocertConfig `json:"autocert"`
-	// If Autocert is not defined, provide file names of static certificate and key
-	CertFile string `json:"cert_file"`
-	KeyFile  string `json:"key_file"`
-}
-
-type tlsAutocertConfig struct {
-	// Domains to support by autocert
-	Domains []string `json:"domains"`
-	// Name of directory where auto-certificates are cached, e.g. /etc/letsencrypt/live/your-domain-here
-	CertCache string `json:"cache"`
-	// Contact email for letsencrypt
-	Email string `json:"email"`
-}
-
-func listenAndServe(addr string, mux *http.ServeMux, tlsEnabled bool, jsconfig string, stop <-chan bool) error {
-	var tlsConfig tlsConfig
-
-	if jsconfig != "" {
-		if err := json.Unmarshal([]byte(jsconfig), &tlsConfig); err != nil {
-			return errors.New("http: failed to parse tls_config: " + err.Error() + "(" + jsconfig + ")")
-		}
-	}
-
+func listenAndServe(addr string, mux *http.ServeMux, tlfConf *tls.Config, stop <-chan bool) error {
 	shuttingDown := false
 
 	httpdone := make(chan bool)
@@ -70,51 +37,28 @@ func listenAndServe(addr string, mux *http.ServeMux, tlsEnabled bool, jsconfig s
 		Addr:    addr,
 		Handler: mux,
 	}
-	if tlsEnabled || tlsConfig.Enabled {
 
-		if tlsConfig.StrictMaxAge > 0 {
-			globals.tlsStrictMaxAge = strconv.Itoa(tlsConfig.StrictMaxAge)
-		}
-
-		// If port is not specified, use default https port (443),
-		// otherwise it will default to 80
-		if server.Addr == "" {
-			server.Addr = ":https"
-		}
-
-		server.TLSConfig = &tls.Config{}
-		if tlsConfig.Autocert != nil {
-			certManager := autocert.Manager{
-				Prompt:     autocert.AcceptTOS,
-				HostPolicy: autocert.HostWhitelist(tlsConfig.Autocert.Domains...),
-				Cache:      autocert.DirCache(tlsConfig.Autocert.CertCache),
-				Email:      tlsConfig.Autocert.Email,
-			}
-
-			server.TLSConfig.GetCertificate = certManager.GetCertificate
-			if tlsConfig.CertFile != "" || tlsConfig.KeyFile != "" {
-				log.Println("HTTP server: using autocert, static cert and key files are ignored")
-				tlsConfig.CertFile = ""
-				tlsConfig.KeyFile = ""
-			}
-		} else if tlsConfig.CertFile == "" || tlsConfig.KeyFile == "" {
-			return errors.New("HTTP server: missing certificate or key file names")
-		}
-	}
+	server.TLSConfig = tlfConf
 
 	go func() {
 		var err error
-		if tlsEnabled || tlsConfig.Enabled {
-			if tlsConfig.RedirectHTTP != "" {
+		if server.TLSConfig != nil {
+			// If port is not specified, use default https port (443),
+			// otherwise it will default to 80
+			if server.Addr == "" {
+				server.Addr = ":https"
+			}
+
+			if globals.tlsRedirectHTTP != "" {
 				log.Printf("Redirecting connections from HTTP at [%s] to HTTPS at [%s]",
-					tlsConfig.RedirectHTTP, server.Addr)
+					globals.tlsRedirectHTTP, server.Addr)
 
 				// This is a second HTTP server listenning on a different port.
-				go http.ListenAndServe(tlsConfig.RedirectHTTP, tlsRedirect(addr))
+				go http.ListenAndServe(globals.tlsRedirectHTTP, tlsRedirect(server.Addr))
 			}
 
 			log.Printf("Listening for client HTTPS connections on [%s]", server.Addr)
-			err = server.ListenAndServeTLS(tlsConfig.CertFile, tlsConfig.KeyFile)
+			err = server.ListenAndServeTLS("", "")
 		} else {
 			log.Printf("Listening for client HTTP connections on [%s]", server.Addr)
 			err = server.ListenAndServe()
@@ -130,7 +74,7 @@ func listenAndServe(addr string, mux *http.ServeMux, tlsEnabled bool, jsconfig s
 	}()
 
 	// Wait for either a termination signal or an error
-loop:
+Loop:
 	for {
 		select {
 		case <-stop:
@@ -146,14 +90,14 @@ loop:
 			// While the server shuts down, termianate all sessions.
 			globals.sessionStore.Shutdown()
 
-			// Wait for http server to stop Accept()-ing connections
+			// Wait for http server to stop Accept()-ing connections.
 			<-httpdone
 			cancel()
 
 			// Shutdown local cluster node, if it's a part of a cluster.
 			globals.cluster.shutdown()
 
-			// Terminate plugin connections
+			// Terminate plugin connections.
 			pluginsShutdown()
 
 			// Shutdown gRPC server, if one is configured.
@@ -162,17 +106,20 @@ loop:
 				globals.grpcServer.Stop()
 			}
 
-			// Shutdown the hub. The hub will shutdown topics
+			// Stop publishing statistics.
+			statsShutdown()
+
+			// Shutdown the hub. The hub will shutdown topics.
 			hubdone := make(chan bool)
 			globals.hub.shutdown <- hubdone
 
-			// wait for the hub to finish
+			// Wait for the hub to finish.
 			<-hubdone
 
-			break loop
+			break Loop
 
 		case <-httpdone:
-			break loop
+			break Loop
 		}
 	}
 	return nil
@@ -264,19 +211,41 @@ func tlsRedirect(toPort string) http.HandlerFunc {
 	}
 
 	return func(wrt http.ResponseWriter, req *http.Request) {
-		target := *req.URL
-		target.Scheme = "https"
-		if target.Port() != "" {
-			if toPort != "" {
-				// Replace the port number.
-				target.Host = net.JoinHostPort(target.Hostname(), toPort)
-			} else {
-				// Just strip the port number.
-				target.Host = target.Hostname()
-			}
+		host, _, err := net.SplitHostPort(req.Host)
+		if err != nil {
+			// If SplitHostPort has failed assume it's because :port part is missing.
+			host = req.Host
 		}
+
+		target, _ := url.ParseRequestURI(req.RequestURI)
+		target.Scheme = "https"
+
+		// Ensure valid redirect target.
+		if toPort != "" {
+			// Replace the port number.
+			target.Host = net.JoinHostPort(host, toPort)
+		} else {
+			target.Host = host
+		}
+
+		if target.Path == "" {
+			target.Path = "/"
+		}
+
 		http.Redirect(wrt, req, target.String(), http.StatusTemporaryRedirect)
 	}
+}
+
+// Wrapper for http.Handler which optionally adds a Cache-Control header to the response
+func cacheControlHandler(maxAge int, handler http.Handler) http.Handler {
+	if maxAge > 0 {
+		strMaxAge := strconv.Itoa(maxAge)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "must-revalidate, public, max-age="+strMaxAge)
+			handler.ServeHTTP(w, r)
+		})
+	}
+	return handler
 }
 
 // Get API key from an HTTP request.

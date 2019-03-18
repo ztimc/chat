@@ -1,5 +1,7 @@
 package token
 
+// Authentication by HMAC-signed security token.
+
 import (
 	"bytes"
 	"crypto/hmac"
@@ -7,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/tinode/chat/server/auth"
@@ -14,8 +17,11 @@ import (
 	"github.com/tinode/chat/server/store/types"
 )
 
+var disabledUserIDs *sync.Map
+
 // authenticator is a singleton instance of the authenticator.
 type authenticator struct {
+	name         string
 	hmacSalt     []byte
 	lifetime     time.Duration
 	serialNumber int
@@ -37,9 +43,9 @@ type tokenLayout struct {
 }
 
 // Init initializes the authenticator: parses the config and sets salt, serial number and lifetime.
-func (ta *authenticator) Init(jsonconf string) error {
-	if ta.hmacSalt != nil {
-		return errors.New("auth_token: already initialized")
+func (ta *authenticator) Init(jsonconf, name string) error {
+	if ta.name != "" {
+		return errors.New("auth_token: already initialized as " + ta.name + "; " + name)
 	}
 
 	type configType struct {
@@ -62,9 +68,22 @@ func (ta *authenticator) Init(jsonconf string) error {
 		return errors.New("auth_token: invalid expiration value")
 	}
 
+	ta.name = name
 	ta.hmacSalt = config.Key
 	ta.lifetime = time.Duration(config.ExpireIn) * time.Second
 	ta.serialNumber = config.SerialNum
+
+	disabledUserIDs = &sync.Map{}
+
+	// Load UIDs which were disabled within token lifetime.
+	disabled, err := store.Users.GetDisabled(time.Now().Add(-ta.lifetime))
+	if err != nil {
+		return err
+	}
+
+	for _, uid := range disabled {
+		disabledUserIDs.Store(uid, struct{}{})
+	}
 
 	return nil
 }
@@ -75,8 +94,8 @@ func (authenticator) AddRecord(rec *auth.Rec, secret []byte) (*auth.Rec, error) 
 }
 
 // UpdateRecord is not supported, will produce an error.
-func (authenticator) UpdateRecord(rec *auth.Rec, secret []byte) error {
-	return types.ErrUnsupported
+func (authenticator) UpdateRecord(rec *auth.Rec, secret []byte) (*auth.Rec, error) {
+	return nil, types.ErrUnsupported
 }
 
 // Authenticate checks validity of provided token.
@@ -97,23 +116,32 @@ func (ta *authenticator) Authenticate(token []byte) (*auth.Rec, []byte, error) {
 	hbuf := new(bytes.Buffer)
 	binary.Write(hbuf, binary.LittleEndian, &tl)
 
+	// Check signature.
 	hasher := hmac.New(sha256.New, ta.hmacSalt)
 	hasher.Write(hbuf.Bytes())
 	if !hmac.Equal(token[dataSize:dataSize+sha256.Size], hasher.Sum(nil)) {
 		return nil, nil, types.ErrFailed
 	}
 
-	if tl.AuthLevel < 0 || auth.Level(tl.AuthLevel) > auth.LevelRoot {
+	// Check authentication level for validity.
+	if auth.Level(tl.AuthLevel) > auth.LevelRoot {
 		return nil, nil, types.ErrMalformed
 	}
 
+	// Check serial number.
 	if int(tl.SerialNumber) != ta.serialNumber {
 		return nil, nil, types.ErrFailed
 	}
 
+	// Check token expiration time.
 	expires := time.Unix(int64(tl.Expires), 0).UTC()
 	if expires.Before(time.Now().Add(1 * time.Second)) {
 		return nil, nil, types.ErrExpired
+	}
+
+	// Check if the user is disabled.
+	if _, disabled := disabledUserIDs.Load(types.Uid(tl.Uid)); disabled {
+		return nil, nil, types.ErrFailed
 	}
 
 	return &auth.Rec{
@@ -154,8 +182,9 @@ func (authenticator) IsUnique(token []byte) (bool, error) {
 	return false, types.ErrUnsupported
 }
 
-// DelRecords is a noop which always succeeds.
+// DelRecords adds disabled user ID to a stop list.
 func (authenticator) DelRecords(uid types.Uid) error {
+	disabledUserIDs.Store(uid, struct{}{})
 	return nil
 }
 

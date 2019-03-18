@@ -2,21 +2,21 @@
 
 <img src="docs/logo.svg" align="left" width=128 height=128> Instant messaging server. Backend in pure [Go](http://golang.org) (license [GPL 3.0](http://www.gnu.org/licenses/gpl-3.0.en.html)), custom client-side binding in Java and Javascript, as well as [gRPC](https://grpc.io/) client support for C++, C#, Go, Java, Node, PHP, Python, Ruby, Objective-C (license [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0)). Wire transport is JSON over websocket (long polling is also available) for custom bindings, or [protobuf](https://developers.google.com/protocol-buffers/) over plain TCP for gRPC. Persistent storage [RethinkDB](http://rethinkdb.com/) and MySQL. A third-party [DynamoDB adapter](https://github.com/riandyrn/chat/tree/master/server/db/dynamodb) also exists. Other databases can be supported by writing custom adapters.
 
-Tinode is meant as a replacement for XMPP. On the surface it's a lot like open source WhatsApp or Telegram.
+Tinode is *not* XMPP/Jabber. It is *not* compatible with XMPP. It's meant as a replacement for XMPP. On the surface it's a lot like open source WhatsApp or Telegram.
 
 Version 0.15. This is beta-quality software: feature-complete but probably with a few bugs. Follow [instructions](INSTALL.md) to install and run. Read [API documentation](docs/API.md).
 
 
 ## Why?
 
-The promise of [XMPP](http://xmpp.org/) was to deliver federated instant messaging: anyone would be able to spin up an IM server capable of exchanging messages with any other XMPP server in the world. Unfortunately XMPP never delivered on this promse. Instant messengers are still a bunch of incompatible walled gardens, similar to what AoL of the late 1990s was to the open Internet.
+The promise of [XMPP](http://xmpp.org/) was to deliver federated instant messaging: anyone would be able to spin up an IM server capable of exchanging messages with any other XMPP server in the world. Unfortunately XMPP never delivered on this promise. Instant messengers are still a bunch of incompatible walled gardens, similar to what AoL of the late 1990s was to the open Internet.
 
 The goal of this project is to actually deliver on XMPP's original vision: create a modern open platform for federated instant messaging with emphasis on mobile communication. A secondary goal is to create a decentralized IM platform which is much harder to track and block by the governments.
 
 
 ## Getting support
 
-* Read [API documentation](docs/API.md).
+* Read [API documentation](docs/API.md) and [FAQ](docs/faq.md).
 * For support, general questions, discussions post to [https://groups.google.com/d/forum/tinode](https://groups.google.com/d/forum/tinode).
 * For bugs and feature requests [open an issue](https://github.com/tinode/chat/issues/new).
 
@@ -70,10 +70,11 @@ A text-only [command line client](./tn-cli) implements every possible command.
 * Java bindings (dependencies: [Jackson](https://github.com/FasterXML/jackson), [Java-Websocket](https://github.com/TooTallNate/Java-WebSocket)). Suitable for Android but with no Android SDK dependencies.
 * Websocket, long polling, and [gRPC](https://grpc.io/) over TCP transports.
 * JSON or [protobuf version 3](https://developers.google.com/protocol-buffers/) wire protocols.
-* [TLS](https://en.wikipedia.org/wiki/Transport_Layer_Security) with [Letsenrypt](https://letsencrypt.org/) or conventional certificates.
+* [TLS](https://en.wikipedia.org/wiki/Transport_Layer_Security) with [Letsencrypt](https://letsencrypt.org/) or conventional certificates.
 * User search/discovery.
 * Rich formatting of messages, markdown-style: \*style\* &rarr; **style**.
 * Inline images and file attachments.
+* Forms and templated responses suitable for chatbots.
 * Message status notifications: message delivery to server; received and read notifications; typing notifications.
 * Support for client-side data caching.
 * Ability to block unwanted communication server-side.
@@ -84,8 +85,8 @@ A text-only [command line client](./tn-cli) implements every possible command.
 
 ### Planned
 
-* iOS client bindings and client.
-* Federation.
+* iOS client bindings and client ([in progress](https://github.com/tinode/ios)).
+* [Federation](https://en.wikipedia.org/wiki/Federation_(information_technology)).
 * End to end encryption with [OTR](https://en.wikipedia.org/wiki/Off-the-Record_Messaging) for one-on-one messaging and undecided method for group messaging.
 * Group messaging with unlimited number (or hundreds of thousands) of members with bearer token access control.
 * Hot standby.

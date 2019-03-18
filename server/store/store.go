@@ -189,7 +189,7 @@ func (UsersObjMapper) Create(user *types.User, private interface{}) (*types.User
 	if err != nil {
 		// Best effort to delete incomplete user record. Orphaned user records are not a problem.
 		// They just take up space.
-		adp.UserDelete(user.Uid(), false)
+		adp.UserDelete(user.Uid(), true)
 		return nil, err
 	}
 
@@ -227,9 +227,9 @@ func (UsersObjMapper) UpdateAuthRecord(uid types.Uid, authLvl auth.Level, scheme
 	return adp.AuthUpdRecord(uid, scheme, scheme+":"+unique, authLvl, secret, expires)
 }
 
-// DelAuthRecords deletes user's all auth records of the given scheme.
+// DelAuthRecords deletes user's auth records of the given scheme.
 func (UsersObjMapper) DelAuthRecords(uid types.Uid, scheme string) error {
-	return adp.AuthDelRecord(uid, scheme)
+	return adp.AuthDelScheme(uid, scheme)
 }
 
 // Get returns a user object for the given user id
@@ -248,18 +248,13 @@ func (UsersObjMapper) GetByCred(method, value string) (types.Uid, error) {
 }
 
 // Delete deletes user records.
-func (UsersObjMapper) Delete(id types.Uid, soft bool) error {
-	if !soft {
-		adp.SubsDelForUser(id)
-		// TODO: Maybe delete topics where the user is the owner and all subscriptions to those topics,
-		// and messages
-		adp.AuthDelAllRecords(id)
-		adp.CredDel(id, "")
-	}
+func (UsersObjMapper) Delete(id types.Uid, hard bool) error {
+	return adp.UserDelete(id, hard)
+}
 
-	adp.UserDelete(id, soft)
-
-	return errors.New("store: not implemented")
+// GetDisabled returns user IDs which were disabled (soft-deleted) since specifid time.
+func (UsersObjMapper) GetDisabled(since time.Time) ([]types.Uid, error) {
+	return adp.UserGetDisabled(since)
 }
 
 // UpdateLastSeen updates LastSeen and UserAgent.
@@ -273,7 +268,13 @@ func (UsersObjMapper) Update(uid types.Uid, update map[string]interface{}) error
 	return adp.UserUpdate(uid, update)
 }
 
-// GetSubs loads a list of subscriptions for the given user
+// UpdateTags either resets tags to the given slice or creates a union of existing tags and the new ones.
+func (UsersObjMapper) UpdateTags(uid types.Uid, tags []string, reset bool) error {
+	return adp.UserUpdateTags(uid, tags, reset)
+}
+
+// GetSubs loads a list of subscriptions for the given user. Does not load Public, does not load
+// deleted subscriptions.
 func (UsersObjMapper) GetSubs(id types.Uid, opts *types.QueryOpt) ([]types.Subscription, error) {
 	return adp.SubsForUser(id, false, opts)
 }
@@ -300,6 +301,11 @@ func (UsersObjMapper) GetTopics(id types.Uid, opts *types.QueryOpt) ([]types.Sub
 // Deleted topics are returned too.
 func (UsersObjMapper) GetTopicsAny(id types.Uid, opts *types.QueryOpt) ([]types.Subscription, error) {
 	return adp.TopicsForUser(id, true, opts)
+}
+
+// GetOwnTopics retuens a slice of group topic names where the user is the owner.
+func (UsersObjMapper) GetOwnTopics(id types.Uid, opts *types.QueryOpt) ([]string, error) {
+	return adp.OwnTopics(id, opts)
 }
 
 // SaveCred saves a credential validation request.
@@ -337,6 +343,11 @@ func (UsersObjMapper) GetAllCred(id types.Uid) ([]*types.Credential, error) {
 	return adp.CredGet(id, "")
 }
 
+// DelCred deletes user's credentials. If method is "" all credentials are deleted.
+func (UsersObjMapper) DelCred(id types.Uid, method string) error {
+	return adp.CredDel(id, method)
+}
+
 // TopicsObjMapper is a struct to hold methods for persistence mapping for the topic object.
 type TopicsObjMapper struct{}
 
@@ -348,6 +359,7 @@ func (TopicsObjMapper) Create(topic *types.Topic, owner types.Uid, private inter
 
 	topic.InitTimes()
 	topic.TouchedAt = &topic.CreatedAt
+	topic.Owner = owner.String()
 
 	err := adp.TopicCreate(topic)
 	if err != nil {
@@ -382,12 +394,14 @@ func (TopicsObjMapper) Get(topic string) (*types.Topic, error) {
 	return adp.TopicGet(topic)
 }
 
-// GetUsers loads subscriptions for topic plus loads user.Public
+// GetUsers loads subscriptions for topic plus loads user.Public.
+// Deleted subscriptions are not loaded.
 func (TopicsObjMapper) GetUsers(topic string, opts *types.QueryOpt) ([]types.Subscription, error) {
 	return adp.UsersForTopic(topic, false, opts)
 }
 
-// GetUsersAny is the same as GetUsers, except it loads deleted subscriptions too.
+// GetUsersAny loads subscriptions for topic plus loads user.Public. It's the same as GetUsers,
+// except it loads deleted subscriptions too.
 func (TopicsObjMapper) GetUsersAny(topic string, opts *types.QueryOpt) ([]types.Subscription, error) {
 	return adp.UsersForTopic(topic, true, opts)
 }
@@ -398,22 +412,26 @@ func (TopicsObjMapper) GetSubs(topic string, opts *types.QueryOpt) ([]types.Subs
 	return adp.SubsForTopic(topic, false, opts)
 }
 
+// GetSubsAny loads a list of subscriptions to the given topic including deleted subscription.
+// user.Public is not loaded
+func (TopicsObjMapper) GetSubsAny(topic string, opts *types.QueryOpt) ([]types.Subscription, error) {
+	return adp.SubsForTopic(topic, true, opts)
+}
+
 // Update is a generic topic update.
 func (TopicsObjMapper) Update(topic string, update map[string]interface{}) error {
 	update["UpdatedAt"] = types.TimeNow()
 	return adp.TopicUpdate(topic, update)
 }
 
-// Delete deletes topic, messages, attachments, and subscriptions.
-func (TopicsObjMapper) Delete(topic string) error {
-	if err := adp.SubsDelForTopic(topic); err != nil {
-		return err
-	}
-	if err := adp.MessageDeleteList(topic, nil); err != nil {
-		return err
-	}
+// OwnerChange replaces the old topic owner with the new owner.
+func (TopicsObjMapper) OwnerChange(topic string, newOwner, oldOwner types.Uid) error {
+	return adp.TopicOwnerChange(topic, newOwner, oldOwner)
+}
 
-	return adp.TopicDelete(topic)
+// Delete deletes topic, messages, attachments, and subscriptions.
+func (TopicsObjMapper) Delete(topic string, hard bool) error {
+	return adp.TopicDelete(topic, hard)
 }
 
 // SubsObjMapper is A struct to hold methods for persistence mapping for the Subscription object.
@@ -456,24 +474,8 @@ type MessagesObjMapper struct{}
 // Messages is an instance of MessagesObjMapper to map methods to.
 var Messages MessagesObjMapper
 
-func interfaceToStringSlice(src interface{}) []string {
-	var dst []string
-	if src != nil {
-		if arr, ok := src.([]string); ok {
-			dst = arr
-		} else if arr, ok := src.([]interface{}); ok {
-			for _, val := range arr {
-				if str, ok := val.(string); ok {
-					dst = append(dst, str)
-				}
-			}
-		}
-	}
-	return dst
-}
-
 // Save message
-func (MessagesObjMapper) Save(msg *types.Message) error {
+func (MessagesObjMapper) Save(msg *types.Message, readBySender bool) error {
 	msg.InitTimes()
 
 	// Increment topic's or user's SeqId
@@ -507,9 +509,19 @@ func (MessagesObjMapper) Save(msg *types.Message) error {
 		return err
 	}
 
+	// Mark message as read by the sender.
+	if readBySender {
+		// Ignore the error here. It's not a big deal if it fails.
+		adp.SubsUpdate(msg.Topic, types.ParseUserId(msg.From),
+			map[string]interface{}{
+				"RecvSeqId": msg.SeqId,
+				"ReadSeqId": msg.SeqId})
+	}
+
 	if len(attachments) > 0 {
 		return adp.MessageAttachments(msg.Uid(), attachments)
 	}
+
 	return nil
 }
 
@@ -530,6 +542,7 @@ func (MessagesObjMapper) DeleteList(topic string, delID int, forUser types.Uid, 
 		return err
 	}
 
+	// TODO: move to adapter
 	if delID > 0 {
 		// Record ID of the delete transaction
 		err = adp.TopicUpdate(topic, map[string]interface{}{"DelId": delID})
@@ -571,7 +584,7 @@ func (MessagesObjMapper) GetDeleted(topic string, forUser types.Uid, opt *types.
 		ranges = append(ranges, dm.SeqIdRanges...)
 	}
 	sort.Sort(types.RangeSorter(ranges))
-	types.RangeSorter(ranges).Normalize()
+	ranges = types.RangeSorter(ranges).Normalize()
 
 	return ranges, maxID, nil
 }
@@ -583,15 +596,18 @@ var authHandlers map[string]auth.AuthHandler
 var authHandlerNames map[string]string
 
 // RegisterAuthScheme registers an authentication scheme handler.
+// The 'name' must be the hardcoded name, NOT the logical name.
 func RegisterAuthScheme(name string, handler auth.AuthHandler) {
-	name = strings.ToLower(name)
-
-	if authHandlers == nil {
-		authHandlers = make(map[string]auth.AuthHandler)
+	if name == "" {
+		panic("RegisterAuthScheme: empty auth scheme name")
 	}
-
 	if handler == nil {
 		panic("RegisterAuthScheme: scheme handler is nil")
+	}
+
+	name = strings.ToLower(name)
+	if authHandlers == nil {
+		authHandlers = make(map[string]auth.AuthHandler)
 	}
 	if _, dup := authHandlers[name]; dup {
 		panic("RegisterAuthScheme: called twice for scheme " + name)
@@ -599,12 +615,39 @@ func RegisterAuthScheme(name string, handler auth.AuthHandler) {
 	authHandlers[name] = handler
 }
 
-// GetAuthHandler returns an auth handler by name irrspectful of logical naming.
+// GetAuthNames returns all addressable auth handler names, logical and hardcoded
+// excluding those which are disabled like "basic:".
+func GetAuthNames() []string {
+	if len(authHandlers) == 0 {
+		return nil
+	}
+
+	var allNames []string
+	for name := range authHandlers {
+		allNames = append(allNames, name)
+	}
+	for name := range authHandlerNames {
+		allNames = append(allNames, name)
+	}
+
+	var names []string
+	for _, name := range allNames {
+		if GetLogicalAuthHandler(name) != nil {
+			names = append(names, name)
+		}
+	}
+
+	return names
+
+}
+
+// GetAuthHandler returns an auth handler by actual hardcoded name irrspectful of logical naming.
 func GetAuthHandler(name string) auth.AuthHandler {
 	return authHandlers[strings.ToLower(name)]
 }
 
-// GetLogicalAuthHandler returns an auth handler by logical name.
+// GetLogicalAuthHandler returns an auth handler by logical name. If there is no handler by that
+// logical name it tries to find one by the hardcoded name.
 func GetLogicalAuthHandler(name string) auth.AuthHandler {
 	name = strings.ToLower(name)
 	if len(authHandlerNames) != 0 {
@@ -616,6 +659,7 @@ func GetLogicalAuthHandler(name string) auth.AuthHandler {
 }
 
 // InitAuthLogicalNames initializes authentication mapping "logical handler name":"actual handler name".
+// Logical name must not be empty, actual name could be an empty string.
 func InitAuthLogicalNames(config json.RawMessage) error {
 	if config == nil || string(config) == "null" {
 		return nil
@@ -633,12 +677,18 @@ func InitAuthLogicalNames(config json.RawMessage) error {
 	}
 	for _, pair := range mapping {
 		if parts := strings.Split(pair, ":"); len(parts) == 2 {
+			if parts[0] == "" {
+				return errors.New("store: empty logical auth name '" + pair + "'")
+			}
+			parts[0] = strings.ToLower(parts[0])
 			if _, ok := authHandlerNames[parts[0]]; ok {
 				return errors.New("store: duplicate mapping for logical auth name '" + pair + "'")
 			}
 			parts[1] = strings.ToLower(parts[1])
-			if _, ok := authHandlers[parts[1]]; !ok {
-				return errors.New("store: unknown handler for logical auth name '" + pair + "'")
+			if parts[1] != "" {
+				if _, ok := authHandlers[parts[1]]; !ok {
+					return errors.New("store: unknown handler for logical auth name '" + pair + "'")
+				}
 			}
 			if parts[0] == parts[1] {
 				// Skip useless identity mapping.

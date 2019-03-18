@@ -3,8 +3,12 @@
 package main
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,9 +19,13 @@ import (
 
 	"github.com/tinode/chat/server/auth"
 	"github.com/tinode/chat/server/store/types"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 var tagPrefixRegexp = regexp.MustCompile(`^([a-z]\w{0,5}):\S`)
+
+const nullValue = "\u2421"
 
 // Convert a list of IDs into ranges
 func delrangeDeserialize(in []types.Range) []MsgDelRange {
@@ -28,24 +36,6 @@ func delrangeDeserialize(in []types.Range) []MsgDelRange {
 	var out []MsgDelRange
 	for _, r := range in {
 		out = append(out, MsgDelRange{LowId: r.Low, HiId: r.Hi})
-	}
-
-	return out
-}
-
-func delrangeSerialize(in []MsgDelRange) []types.Range {
-	if len(in) == 0 {
-		return nil
-	}
-
-	var out []types.Range
-	for _, r := range in {
-		if r.HiId <= r.LowId+1 {
-			// High end is exclusive, i.e. range 1..2 is equivalent to 1.
-			out = append(out, types.Range{Low: r.LowId})
-		} else {
-			out = append(out, types.Range{Low: r.LowId, Hi: r.HiId})
-		}
 	}
 
 	return out
@@ -238,9 +228,8 @@ func msgOpts2storeOpts(req *MsgGetOpts) *types.QueryOpt {
 
 // Check if the interface contains a string with a single Unicode Del control character.
 func isNullValue(i interface{}) bool {
-	const clearValue = "\u2421"
 	if str, ok := i.(string); ok {
-		return str == clearValue
+		return str == nullValue
 	}
 	return false
 }
@@ -280,7 +269,10 @@ func decodeStoreError(err error, id, topic string, timestamp time.Time,
 			errmsg = ErrUnknown(id, topic, timestamp)
 		}
 	}
-	errmsg.Ctrl.Params = params
+
+	if params != nil {
+		errmsg.Ctrl.Params = params
+	}
 
 	return errmsg
 }
@@ -424,7 +416,7 @@ func parseSearchQuery(query string) ([]string, []string, error) {
 	var prev int
 	query = strings.TrimSpace(query)
 	// Split query into tokens.
-	for i, w := 0, 0; prev != END; i += w {
+	for i, w, pos := 0, 0, 0; prev != END; i, pos = i+w, pos+1 {
 		//
 		var emit bool
 
@@ -452,7 +444,7 @@ func parseSearchQuery(query string) ([]string, []string, error) {
 			} else {
 				if prev == ORD {
 					// Reject strings like a"b
-					return nil, nil, errors.New("missing operator")
+					return nil, nil, fmt.Errorf("missing operator at or near %d", pos)
 				}
 				// Start of the quoted string. Open the quote.
 				ctx.quo = true
@@ -466,7 +458,7 @@ func parseSearchQuery(query string) ([]string, []string, error) {
 		case OR:
 			if ctx.postOp == OR {
 				// More than one comma: ' , ,,'
-				return nil, nil, errors.New("invalid operator sequence")
+				return nil, nil, fmt.Errorf("invalid operator sequence at or near %d", pos)
 			}
 			// Ensure context is not "and", i.e. the case like ' ,' -> ','
 			ctx.postOp = OR
@@ -499,7 +491,7 @@ func parseSearchQuery(query string) ([]string, []string, error) {
 
 		if emit {
 			if ctx.quo {
-				return nil, nil, errors.New("unterminated quoted string")
+				return nil, nil, fmt.Errorf("unterminated quoted string at or near %d", pos)
 			}
 
 			// Emit the new token.
@@ -574,11 +566,162 @@ func toAbsolutePath(base, path string) string {
 
 // Detect platform from the UserAgent string.
 func platformFromUA(ua string) string {
+	ua = strings.ToLower(ua)
 	switch {
+	case strings.Contains(ua, "reactnative"):
+		switch {
+		case strings.Contains(ua, "iphone"),
+			strings.Contains(ua, "ipad"):
+			return "ios"
+		case strings.Contains(ua, "android"):
+			return "android"
+		}
+		return ""
 	case strings.Contains(ua, "tinodejs"):
 		return "web"
 	case strings.Contains(ua, "tindroid"):
 		return "android"
 	}
 	return ""
+}
+
+func parseTLSConfig(tlsEnabled bool, jsconfig json.RawMessage) (*tls.Config, error) {
+	type tlsAutocertConfig struct {
+		// Domains to support by autocert
+		Domains []string `json:"domains"`
+		// Name of directory where auto-certificates are cached, e.g. /etc/letsencrypt/live/your-domain-here
+		CertCache string `json:"cache"`
+		// Contact email for letsencrypt
+		Email string `json:"email"`
+	}
+
+	type tlsConfig struct {
+		// Flag enabling TLS
+		Enabled bool `json:"enabled"`
+		// Listen for connections on this address:port and redirect them to HTTPS port.
+		RedirectHTTP string `json:"http_redirect"`
+		// Enable Strict-Transport-Security by setting max_age > 0
+		StrictMaxAge int `json:"strict_max_age"`
+		// ACME autocert config, e.g. letsencrypt.org
+		Autocert *tlsAutocertConfig `json:"autocert"`
+		// If Autocert is not defined, provide file names of static certificate and key
+		CertFile string `json:"cert_file"`
+		KeyFile  string `json:"key_file"`
+	}
+
+	var config tlsConfig
+
+	if jsconfig != nil {
+		if err := json.Unmarshal(jsconfig, &config); err != nil {
+			return nil, errors.New("http: failed to parse tls_config: " + err.Error() + "(" + string(jsconfig) + ")")
+		}
+	}
+
+	if !tlsEnabled && !config.Enabled {
+		return nil, nil
+	}
+
+	if config.StrictMaxAge > 0 {
+		globals.tlsStrictMaxAge = strconv.Itoa(config.StrictMaxAge)
+	}
+
+	globals.tlsRedirectHTTP = config.RedirectHTTP
+
+	// If autocert is provided, use it.
+	if config.Autocert != nil {
+		certManager := autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(config.Autocert.Domains...),
+			Cache:      autocert.DirCache(config.Autocert.CertCache),
+			Email:      config.Autocert.Email,
+		}
+		return certManager.TLSConfig(), nil
+	}
+
+	// Otherwise try to use static keys.
+	cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+}
+
+// Merge source interface{} into destination interface.
+// If values are maps,deep-merge them. Otherwise shallow-copy.
+// Returns dst, true if the dst value was changed.
+func mergeInterfaces(dst, src interface{}) (interface{}, bool) {
+	var changed bool
+
+	if src == nil {
+		return dst, changed
+	}
+
+	vsrc := reflect.ValueOf(src)
+	switch vsrc.Kind() {
+	case reflect.Map:
+		if xsrc, ok := src.(map[string]interface{}); ok {
+			xdst, _ := dst.(map[string]interface{})
+			dst, changed = mergeMaps(xdst, xsrc)
+		} else {
+			changed = true
+			dst = src
+		}
+	case reflect.String:
+		if vsrc.String() == nullValue {
+			changed = dst != nil
+			dst = nil
+		} else if src != nil {
+			changed = true
+			dst = src
+		}
+	default:
+		changed = true
+		dst = src
+	}
+	return dst, changed
+}
+
+// Deep copy maps.
+func mergeMaps(dst, src map[string]interface{}) (map[string]interface{}, bool) {
+	var changed bool
+
+	if len(src) == 0 {
+		return dst, changed
+	}
+
+	if dst == nil {
+		dst = make(map[string]interface{})
+	}
+
+	for key, val := range src {
+		xval := reflect.ValueOf(val)
+		switch xval.Kind() {
+		case reflect.Map:
+			if xsrc, _ := val.(map[string]interface{}); xsrc != nil {
+				// Deep-copy map[string]interface{}
+				xdst, _ := dst[key].(map[string]interface{})
+				var lchange bool
+				dst[key], lchange = mergeMaps(xdst, xsrc)
+				changed = changed || lchange
+			} else if val != nil {
+				// The map is shallow-copied if it's not of the type map[string]interface{}
+				dst[key] = val
+				changed = true
+			}
+		case reflect.String:
+			changed = true
+			if xval.String() == nullValue {
+				delete(dst, key)
+			} else if val != nil {
+				dst[key] = val
+			}
+		default:
+			if val != nil {
+				dst[key] = val
+				changed = true
+			}
+		}
+	}
+
+	return dst, changed
 }

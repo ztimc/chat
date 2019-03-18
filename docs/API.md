@@ -117,9 +117,9 @@ Once the connection is opened, the client must issue a `{hi}` message to the ser
 
 ### gRPC
 
-See definition of the gRPC API in the [proto file](../pbx/model.proto). gRPC API is nearly identical to HTTP API with an exception that it allows the `root` user to send messages on behalf of other users.
+See definition of the gRPC API in the [proto file](../pbx/model.proto). gRPC API has slightly more functionality than the API described in this document: it allows the `root` user to send messages on behalf of other users as well as delete users.
 
-### Websocket
+### WebSocket
 
 Messages are sent in text frames, one message per frame. Binary frames are reserved for future use. By default server allows connections with any value in the `Origin` header.
 
@@ -159,16 +159,23 @@ Logging out is not supported by design. If an application needs to change the us
 
 ### Authentication
 
-The server comes with three authentication methods out of the box: `basic`, `token`, and `anonymous`:
- * `basic` provides authentication by a login-password pair.
+Authentication is conceptually similar to [SASL](https://en.wikipedia.org/wiki/Simple_Authentication_and_Security_Layer): it's provided as a set of adapters each implementing a different authentication method. Authenticators are used during account registration [`{acc}`](#acc) and during [`{login}`](#login). The server comes with the following authentication methods out of the box:
+
  * `token` provides authentication by a cryptographic token.
+ * `basic` provides authentication by a login-password pair.
  * `anonymous` is designed for cases where users are temporary, such as handling customer support requests through chat.
+ * `rest` is a [meta-method](../server/auth/rest/) which allows use of external authentication systems by means of JSON RPC.
 
-Any other authentication method can be implemented using plugins.
+Any other authentication method can be implemented using adapters.
 
-The `token` is intended to be the primary means of authentication. Tokens are designed in such a way that token authentication is light weight. For instance, token authenticator generally does not make any database calls, all processing is done in-memory. All other authentication methods are intended to be used sparingly in order to obtain the token. Once the token is obtained, all subsequent logins should use it.
+The `token` is intended to be the primary means of authentication. Tokens are designed in such a way that token authentication is light weight. For instance, token authenticator generally does not make any database calls, all processing is done in-memory. All other authentication methods are intended to be used only to obtain or refresh the token. Once the token is obtained, subsequent logins should use it.
 
-Authenticators are used during account registration [`{acc}`](#acc) and during [`{login}`](#login).
+The `basic` authentication scheme expects `secret` to be a base64-encoded string of a string composed of a user name followed by a colon `:` followed by a plan text password. User name in the `basic` scheme must not contain the colon character `:` (ASCII 0x3A).
+
+The `anonymous` scheme can be used to create accounts, it cannot be used for logging in: a user creates an account using `anonymous` scheme and obtains a cryptographic token which it uses for subsequent `token` logins. If the token is lost or expired, the user is no longer able to access the account.
+
+Compiled-in authenticator names may be changed by using `logical_names` configuration feature. For example, a custom `rest` authenticator may be exposed as `basic` instead of default one or `token` authenticator could be hidden from users. The feature is activated by providing an array of mappings in the config file: `logical_name:actual_name` to rename or `actual_name:` to hide. For instance, to use a `rest` service for basic authentication use `"logical_names": ["basic:rest"]`.
+
 
 #### Creating an Account
 
@@ -368,7 +375,8 @@ Tinode supports mobile push notifications though compile-time plugins. The chann
 Topics and subscriptions have `public` and `private` fields. Generally, the fields are application-defined. The server does not enforce any particular structure of these fields except for `fnd` topic. At the same time, client software should use the same format for interoperability reasons.
 
 ### Public
-The format of the `public` field is expected to be a [vCard](https://en.wikipedia.org/wiki/VCard):
+The format of the `public` field in group and peer to peer topics is expected to be a [vCard](https://en.wikipedia.org/wiki/VCard) although only `fn` and `photo` fields are currently used by client software:
+
 ```js
 vcard: {
   fn: "John Doe", // string, formatted name
@@ -406,18 +414,23 @@ vcard: {
 }
 ```
 
+The `fnd` topic expects `public` to be a string representing a [search query](#query-language)).
+
 ### Private
 
-The format of the `private` field is expected to be a dictionary. The following fields are currently defined:
+The format of the `private` field in group and peer to peer topics is a set of key-value pairs. The following keys are currently defined:
 ```js
 private: {
-  comment: "some comment", // string, optional user comment about a topic or other user
-  arch: true // boolean value indicating that the topic is archived by the user, i.e. should not be shown in the UI with other non-archived topics.
+  comment: "some comment", // string, optional user comment about a topic or a peer user
+  arch: true, // boolean value indicating that the topic is archived by the user, i.e.
+              // should not be shown in the UI with other non-archived topics.
+  accepted: "JRWS" // string, 'given' mode accepted by the user.
 }
 ```
 
-Although it's not yet enforced, custom fields should start with `x-`, e.g. `x-example: "abc"`. The fields should contain primitive types only, i.e. string, boolean, number, null.
+Although it's not yet enforced, custom fields should start with an `x-` followed by the application name, e.g. `x-myapp-value: "abc"`. The fields should contain primitive types only, i.e. `string`, `boolean`, `number`, or `null`.
 
+The `fnd` topic expects `private` to be a string representing a [search query](#query-language)).
 
 ## Format of Content
 
@@ -523,14 +536,17 @@ session ID `sid` in case of long polling, all in `ctrl.params`.
 ```js
 hi: {
   id: "1a2b3",     // string, client-provided message id, optional
-  ver: "0.14",   // string, version of the wire protocol supported by the client, required
+  ver: "0.15.8-rc2", // string, version of the wire protocol supported by the client, required
   ua: "JS/1.0 (Windows 10)", // string, user agent identifying client software,
                    // optional
   dev: "L1iC2...dNtk2", // string, unique value which identifies this specific
-				   // connected device for the purpose of push notifications; not
-				   // interpreted by the server.
-				   // see [Push notifications support](#push-notifications-support); optional
-  lang: "EN" 	   // human language of the client device; optional
+                   // connected device for the purpose of push notifications; not
+                   // interpreted by the server.
+                   // see [Push notifications support](#push-notifications-support); optional
+  platf: "android", // string, underlying OS for the purpose of push notifications, one of
+                   // "android", "ios", "web"; if missing, the server will try its best to
+                   // detect the platform; optional
+  lang: "en-US"    // human language of the client device; optional
 }
 ```
 The user agent `ua` is expected to follow [RFC 7231 section 5.5.3](http://tools.ietf.org/html/rfc7231#section-5.5.3) recommendation but the format is not enforced. The message can be sent more than once to update `ua`, `dev` and `lang` values. If sent more than once, the `ver` field of the second and subsequent messages must be either unchanged or not set.
@@ -606,18 +622,15 @@ login: {
   ],   // response to a request for credential verification, optional
 }
 ```
-The `basic` authentication scheme expects `secret` to be a base64-encoded string of a string composed of a user name followed by a colon `:` followed by a plan text password. User name in the `basic` scheme must not contain colon character ':' (ASCII 0x3A). The `token` expects secret to be a previously obtained security token.
-
-The only supported authentication schemes are `basic` and `token`. Although `anonymous` scheme can be used to create accounts, it cannot be used for logging in. A scheme `reset` can be used for password reset.
 
 Server responds to a `{login}` packet with a `{ctrl}` message. The `params` of the message contains the id of the logged in user as `user`. The `token` contains an encrypted string which can be used for authentication. Expiration time of the token is passed as `expires`.
 
 #### `{sub}`
 
 The `{sub}` packet serves the following functions:
- * creating a topic
- * subscribing user to a topic
- * attaching session to a topic
+ * creating a new topic
+ * subscribing user to an existing topic
+ * attaching session to a previously subscribed topic
  * fetching topic data
 
 User creates a new group topic by sending `{sub}` packet with the `topic` field set to `"new"`. Server will create a topic and respond back to session with the name of the newly created topic.
@@ -632,7 +645,7 @@ Joining (attaching to) a topic means for the session to start consuming content 
 
 Server replies to the `{sub}` with a `{ctrl}`.
 
-The `{sub}` message may include a `get` and `browse` fields which mirror `what` and `browse` fields of a {get} message. If included, server will treat them as a subsequent `{get}` message on the same topic. In that case the reply may also include `{meta}` and `{data}` messages.
+The `{sub}` message may include a `get` and `set` fields which mirror `{get}` and `{set}` messages. If included, server will treat them as a subsequent `{set}` and `{get}` messages on the same topic. They `get` is set the reply may include `{meta}` and `{data}` messages.
 
 
 ```js
@@ -747,12 +760,14 @@ See [Format of Content](#format-of-content) for `content` format considerations.
 The following values are currently defined for the `head` field:
 
  * `attachments`: an array of paths indicating media attached to this message `["/v0/file/s/sJOD_tZDPz0.jpg"]`.
+ * `auto`: `true` when the message was sent automatically, i.e. by a chatbot or an auto-responder.
  * `forwarded`: an indicator that the message is a forwarded message, a unique ID of the original message, `"grp1XUtEhjv6HND:123"`.
  * `hashtags`: an array of hashtags in the message without the leading `#` symbol: `["onehash", "twohash"]`.
  * `mentions`: an array of user IDs mentioned (`@alice`) in the message: `["usr1XUtEhjv6HND", "usr2il9suCbuko"]`.
- * `mime`: MIME-type of message contents, `"text/x-drafty"`; null value is interpreted as `"text/plain"`.
+ * `mime`: MIME-type of the message content, `"text/x-drafty"`; a `null` or a missing value is interpreted as `"text/plain"`.
  * `replace`: an indicator that the message is a correction/replacement for another message, a topic-unique ID of the message being updated/replaced, `":123"`
  * `reply`: an indicator that the message is a reply to another message, a unique ID of the original message, `"grp1XUtEhjv6HND:123"`.
+ * `sender`: a user ID of the sender added by the server when the message is sent by on behalf of another user, `"usr1XUtEhjv6HND"`.
  * `thread`: an indicator that the message is a part of a conversation thread, a unique ID of the first message in the thread, `"grp1XUtEhjv6HND:123"`.
 
 Application-specific fields should start with an `x-<application-name>-`. Although the server does not enforce this rule yet, it may start doing so in the future.
@@ -875,28 +890,42 @@ set: {
 
 #### `{del}`
 
-Delete messages or topic.
+Delete messages, subscriptions, topics, users.
 
 ```js
 del: {
   id: "1a2b3", // string, client-provided message id, optional
-  topic: "grp1XUtEhjv6HND", // string, topic affect, required
-  what: "msg", // string, either "topic" or "sub" or "msg"; what to delete - the
-               // entire topic or subscription or just the messages;
+  topic: "grp1XUtEhjv6HND", // string, topic affected, required for "topic", "sub",
+               // "msg"
+  what: "msg", // string, one of "topic", "sub", "msg", "user"; what to delete - the
+               // entire topic, a subscription, some or all messages, a user;
                // optional, default: "msg"
-  hard: false, // boolean, request to delete messages for all users, default: false
+  hard: false, // boolean, request to hard-delete vs mark as deleted; in case of
+               // what="msg" delete for all users vs current user only;
+               // optional, default: false
   delseq: [{low: 123, hi: 125}, {low: 156}], // array of ranges of message IDs
-				// to delete, inclusive-exclusive, i.e. [low, hi), optional
-  user: "usr2il9suCbuko" // string, user whose subscription is being deleted
-               // (what="sub"), optional
+               // to delete, inclusive-exclusive, i.e. [low, hi), optional
+  user: "usr2il9suCbuko" // string, user being deleted (what="user") or whose
+               // subscription is being deleted (what="sub"), optional
 }
 ```
 
-User can soft-delete or hard-delete messages `what="msg"`. Soft-deleting messages hides them from the requesting user but does not delete them from storage. An `R` permission is required to soft-delete messages `hard=false` (default). Messages can be deleted in bulk by specifying one or more message ID ranges in `delseq` parameter. Hard-deleting messages deletes them from storage affecting all users. The `D` permission is needed to hard-delete messages.
+`what="msg"`
 
-Deleting a subscription `what="sub"` removes specified user from topic subscribers. It requires an `A` permission. A user cannot delete own subscription. A `{leave}` should be used instead.
+User can soft-delete `hard=false` (default) or hard-delete `hard=true` messages. Soft-deleting messages hides them from the requesting user but does not delete them from storage. An `R` permission is required to soft-delete messages. Hard-deleting messages deletes message content from storage (`head`, `content`) leaving a message stub. It affects all users. A `D` permission is needed to hard-delete messages. Messages can be deleted in bulk by specifying one or more message ID ranges in `delseq` parameter. Each delete operation is assigned a unique `delete ID`. The greatest `delete ID` is reported back in the `clear` of the `{meta}` message.
 
-Deleting a topic `what="topic"` deletes the topic including all subscriptions, and all messages. The `hard` parameter has no effect on topic deletion: all topic deletions are hard-deletions. Only the owner can delete a topic. The greatest deleted ID is reported back in the `clear` of the `{meta}` message.
+`what="sub"`
+
+Deleting a subscription removes specified user from topic subscribers. It requires an `A` permission. A user cannot delete own subscription. A `{leave}` should be used instead. If the subscription is soft-deleted (default), it's marked as deleted without actually deleting a record from storage.
+
+`what="topic"`
+
+Deleting a topic deletes the topic including all subscriptions, and all messages. Only the owner can delete a topic.
+
+`what="user"`
+
+Deleting a user is a very heavy operation. Use caution.
+
 
 #### `{note}`
 

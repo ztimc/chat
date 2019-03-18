@@ -79,13 +79,15 @@ func (t *Topic) loadContacts(uid types.Uid) error {
 // The originating topic reports its own status in 'what' as "on", "off", "gone" or "?unkn".
 // 	"on" - requester came online
 // 	"off" - requester is offline now
-//  "?none" - requester status is unknown, but don't request a response and don't forward to clients.
+//  "?none" - anchor for "+" command: requester status is unknown, won't generate a response and isn't forwarded to clients.
 //  "gone" - topic deleted or otherwise gone - equivalent of "off+remove"
 //	"?unkn" - requester wants to initiate online status exchange but it's own status is unknown yet. This
 //  notifications is not forwarded to users.
 //
-// If status is followed by command "+en" then the current user should accept incoming notifications
-// from the user2; "+rem" means the subscription is removed. "+dis" is the opposite of "en".
+// "+" commands:
+// "+en": enable subscription, i.e. start accepting incoming notifications from the user2;
+// "+rem": terminate and remove the subscription (subscription deleted)
+// "+dis" disable subscription withot removing it, the opposite of "en".
 // The "+en/rem/dis" command itself is stripped from the notification.
 func (t *Topic) presProcReq(fromUserID, what string, wantReply bool) string {
 	if t.isSuspended() {
@@ -115,7 +117,7 @@ func (t *Topic) presProcReq(fromUserID, what string, wantReply bool) string {
 		online = nil
 		what = ""
 	case "gone":
-		// offline
+		// offline: off+rem
 		cmd = "rem"
 	case "?unkn":
 		// no change in online status
@@ -134,13 +136,14 @@ func (t *Topic) presProcReq(fromUserID, what string, wantReply bool) string {
 
 			if cmd == "rem" {
 				replyAs = "off+rem"
-				if !psd.enabled {
+				if !psd.enabled && what == "off" {
 					// If it was disabled before, don't send a redundant update.
 					what = ""
 				}
 				delete(t.perSubs, fromUserID)
 
 			} else {
+
 				switch cmd {
 				case "":
 					// No change in being enabled or disabled and not being added or removed.
@@ -169,9 +172,13 @@ func (t *Topic) presProcReq(fromUserID, what string, wantReply bool) string {
 					panic("presProcReq: unknown command '" + cmd + "'")
 				}
 
-				if online != nil {
+				if !psd.enabled {
+					// If we don't care about updates, keep the other user off
+					psd.online = false
+				} else if online != nil {
 					psd.online = *online
 				}
+
 				t.perSubs[fromUserID] = psd
 			}
 
@@ -190,6 +197,8 @@ func (t *Topic) presProcReq(fromUserID, what string, wantReply bool) string {
 			what = ""
 		}
 	}
+
+	// log.Println("in-what:", debugWhat, "out-what", what, "from:", fromUserID, "to:", t.name, "reply:", replyAs)
 
 	// If requester's online status has not changed, do not reply, otherwise an endless loop will happen.
 	// wantReply is needed to ensure unnecessary {pres} is not sent:
@@ -216,9 +225,19 @@ func (t *Topic) presUsersOfInterest(what, ua string) {
 	// Push update to subscriptions
 	for topic := range t.perSubs {
 		globals.hub.route <- &ServerComMessage{
-			Pres: &MsgServerPres{
-				Topic: "me", What: what, Src: t.name, UserAgent: ua, wantReply: (what == "on")},
+			Pres:   &MsgServerPres{Topic: "me", What: what, Src: t.name, UserAgent: ua, wantReply: (what == "on")},
 			rcptto: topic}
+	}
+}
+
+// Publish user's update to his/her users of interest on their 'me' topic while user's 'me' topic is offline
+// Case A: user is being deleted, "gone"
+func presUsersOfInterestOffline(uid types.Uid, subs []types.Subscription, what string) {
+	// Push update to subscriptions
+	for _, sub := range subs {
+		globals.hub.route <- &ServerComMessage{
+			Pres:   &MsgServerPres{Topic: "me", What: what, Src: uid.UserId(), wantReply: false},
+			rcptto: sub.Topic}
 	}
 }
 
@@ -261,8 +280,8 @@ func (t *Topic) presSubsOnlineDirect(what string) {
 
 	for sess := range t.sessions {
 		// Check presence filters
-		pud, _ := t.perUser[sess.uid]
-		if !(pud.modeGiven & pud.modeWant).IsPresencer() {
+		pud := t.perUser[sess.uid]
+		if pud.deleted || (!(pud.modeGiven & pud.modeWant).IsPresencer() && what != "gone" && what != "acs") {
 			continue
 		}
 
@@ -295,7 +314,8 @@ func (t *Topic) presSubsOffline(what string, params *presParams, filter *presFil
 	}
 
 	for uid := range t.perUser {
-		if what != "acs" && !presOfflineFilter(t.perUser[uid].modeGiven&t.perUser[uid].modeWant, filter) {
+		if t.perUser[uid].deleted || (what != "acs" && what != "gone" &&
+			!presOfflineFilter(t.perUser[uid].modeGiven&t.perUser[uid].modeWant, filter)) {
 			continue
 		}
 
@@ -327,7 +347,9 @@ func presSubsOfflineOffline(topic string, cat types.TopicCat, subs []types.Subsc
 	original := topic
 	for i := range subs {
 		sub := &subs[i]
-		if what != "acs" && !presOfflineFilter(sub.ModeWant&sub.ModeGiven, nil) {
+		// Let "acs" and "gone" through regardless of 'P'. Don't check for deleted subscriptions:
+		// they are not passed here.
+		if what != "acs" && what != "gone" && !presOfflineFilter(sub.ModeWant&sub.ModeGiven, nil) {
 			continue
 		}
 
@@ -367,9 +389,9 @@ func (t *Topic) presSingleUserOffline(uid types.Uid, what string, params *presPa
 		skipTopic = t.name
 	}
 
-	if pud, ok := t.perUser[uid]; ok &&
+	if pud, ok := t.perUser[uid]; ok && !pud.deleted &&
 		// Send access change notification regardless of P permission.
-		(what == "acs" || presOfflineFilter(pud.modeGiven&pud.modeWant, nil)) {
+		(what == "acs" || what == "gone" || presOfflineFilter(pud.modeGiven&pud.modeWant, nil)) {
 
 		user := uid.UserId()
 		actor := params.actor
@@ -443,8 +465,8 @@ func (t *Topic) presPubMessageDelete(uid types.Uid, delID int, list []MsgDelRang
 	}
 
 	// This check is only needed for V.1, but it does not hurt V.2. Let's do it here for both.
-	pud, _ := t.perUser[uid]
-	if !(pud.modeGiven & pud.modeWant).IsPresencer() {
+	pud := t.perUser[uid]
+	if !(pud.modeGiven & pud.modeWant).IsPresencer() || pud.deleted {
 		return
 	}
 

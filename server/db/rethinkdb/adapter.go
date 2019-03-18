@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"log"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/tinode/chat/server/auth"
 	"github.com/tinode/chat/server/store"
 	t "github.com/tinode/chat/server/store/types"
-	rdb "gopkg.in/gorethink/gorethink.v4"
+	rdb "gopkg.in/rethinkdb/rethinkdb-go.v5"
 )
 
 // adapter holds RethinkDb connection data.
@@ -27,12 +27,12 @@ const (
 	defaultHost     = "localhost:28015"
 	defaultDatabase = "tinode"
 
-	dbVersion = 105
+	dbVersion = 106
 
 	adapterName = "rethinkdb"
 )
 
-// See https://godoc.org/github.com/GoRethink/gorethink#ConnectOpts for explanations.
+// See https://godoc.org/github.com/rethinkdb/rethinkdb-go#ConnectOpts for explanations.
 type configType struct {
 	Database          string      `json:"database,omitempty"`
 	Addresses         interface{} `json:"addresses,omitempty"`
@@ -43,6 +43,8 @@ type configType struct {
 	WriteTimeout      int         `json:"write_timeout,omitempty"`
 	ReadTimeout       int         `json:"read_timeout,omitempty"`
 	KeepAlivePeriod   int         `json:"keep_alive_timeout,omitempty"`
+	UseJSONNumber     bool        `json:"use_json_number,omitempty"`
+	NumRetries        int         `json:"num_retries,omitempty"`
 	InitialCap        int         `json:"initial_cap,omitempty"`
 	MaxOpen           int         `json:"max_open,omitempty"`
 	DiscoverHosts     bool        `json:"discover_hosts,omitempty"`
@@ -96,6 +98,8 @@ func (a *adapter) Open(jsonconfig string) error {
 	opts.WriteTimeout = time.Duration(config.WriteTimeout) * time.Second
 	opts.ReadTimeout = time.Duration(config.ReadTimeout) * time.Second
 	opts.KeepAlivePeriod = time.Duration(config.KeepAlivePeriod) * time.Second
+	opts.UseJSONNumber = config.UseJSONNumber
+	opts.NumRetries = config.NumRetries
 	opts.InitialCap = config.InitialCap
 	opts.MaxOpen = config.MaxOpen
 	opts.DiscoverHosts = config.DiscoverHosts
@@ -197,6 +201,10 @@ func (a *adapter) CreateDb(reset bool) error {
 	if _, err := rdb.DB(a.dbName).TableCreate("users", rdb.TableCreateOpts{PrimaryKey: "Id"}).RunWrite(a.conn); err != nil {
 		return err
 	}
+	// Create secondary index on User.DeletedAt for finding soft-deleted users
+	if _, err := rdb.DB(a.dbName).Table("users").IndexCreate("DeletedAt").RunWrite(a.conn); err != nil {
+		return err
+	}
 	// Create secondary index on User.Tags array so user can be found by tags
 	if _, err := rdb.DB(a.dbName).Table("users").IndexCreate("Tags", rdb.IndexCreateOpts{Multi: true}).RunWrite(a.conn); err != nil {
 		return err
@@ -232,11 +240,15 @@ func (a *adapter) CreateDb(reset bool) error {
 		return err
 	}
 
-	// Topic stored in database
+	// Topics stored in database
 	if _, err := rdb.DB(a.dbName).TableCreate("topics", rdb.TableCreateOpts{PrimaryKey: "Id"}).RunWrite(a.conn); err != nil {
 		return err
 	}
-	// Create secondary index on Topic.Tags array so topics can be found by tags
+	// Secondary index on Owner field for deleting users.
+	if _, err := rdb.DB(a.dbName).Table("topics").IndexCreate("Owner").RunWrite(a.conn); err != nil {
+		return err
+	}
+	// Secondary index on Topic.Tags array so topics can be found by tags.
 	// These tags are not unique as opposite to User.Tags.
 	if _, err := rdb.DB(a.dbName).Table("topics").IndexCreate("Tags", rdb.IndexCreateOpts{Multi: true}).RunWrite(a.conn); err != nil {
 		return err
@@ -246,6 +258,7 @@ func (a *adapter) CreateDb(reset bool) error {
 	if _, err := rdb.DB(a.dbName).TableCreate("messages", rdb.TableCreateOpts{PrimaryKey: "Id"}).RunWrite(a.conn); err != nil {
 		return err
 	}
+	// Compound index of topic - seqID for selecting messages in a topic.
 	if _, err := rdb.DB(a.dbName).Table("messages").IndexCreateFunc("Topic_SeqId",
 		func(row rdb.Term) interface{} {
 			return []interface{}{row.Field("Topic"), row.Field("SeqId")}
@@ -338,16 +351,16 @@ func (a *adapter) AuthAddRecord(uid t.Uid, scheme, unique string, authLvl auth.L
 	return false, nil
 }
 
-// Delete user's authentication record.
-func (a *adapter) AuthDelRecord(uid t.Uid, unique string) error {
+// AuthDelScheme deletes an existing authentication scheme for the user.
+func (a *adapter) AuthDelScheme(uid t.Uid, scheme string) error {
 	_, err := rdb.DB(a.dbName).Table("auth").
 		GetAllByIndex("userid", uid.String()).
-		Filter(map[string]interface{}{"unique": unique}).
+		Filter(map[string]interface{}{"scheme": scheme}).
 		Delete().RunWrite(a.conn)
 	return err
 }
 
-// Delete user's all authentication records
+// AuthDelAllRecords deletes user's all authentication records
 func (a *adapter) AuthDelAllRecords(uid t.Uid) (int, error) {
 	res, err := rdb.DB(a.dbName).Table("auth").GetAllByIndex("userid", uid.String()).Delete().RunWrite(a.conn)
 	return res.Deleted, err
@@ -376,7 +389,7 @@ func (a *adapter) AuthUpdRecord(uid t.Uid, scheme, unique string, authLvl auth.L
 		return dupe, t.ErrNotFound
 	}
 	var record struct {
-		Unique string `gorethink:"unique"`
+		Unique string `json:"unique"`
 	}
 	if err = cursor.One(&record); err != nil {
 		return dupe, err
@@ -393,7 +406,7 @@ func (a *adapter) AuthUpdRecord(uid t.Uid, scheme, unique string, authLvl auth.L
 		dupe, err = a.AuthAddRecord(uid, scheme, unique, authLvl, secret, expires)
 		if err == nil {
 			// We can't do much with the error here. No support for transactions :(
-			a.AuthDelRecord(uid, unique)
+			a.AuthDelScheme(uid, unique)
 		}
 	}
 	return dupe, err
@@ -415,10 +428,10 @@ func (a *adapter) AuthGetRecord(uid t.Uid, scheme string) (string, auth.Level, [
 	}
 
 	var record struct {
-		Unique  string     `gorethink:"unique"`
-		AuthLvl auth.Level `gorethink:"authLvl"`
-		Secret  []byte     `gorethink:"secret"`
-		Expires time.Time  `gorethink:"expires"`
+		Unique  string     `json:"unique"`
+		AuthLvl auth.Level `json:"authLvl"`
+		Secret  []byte     `json:"secret"`
+		Expires time.Time  `json:"expires"`
 	}
 
 	if err = cursor.One(&record); err != nil {
@@ -444,10 +457,10 @@ func (a *adapter) AuthGetUniqueRecord(unique string) (t.Uid, auth.Level, []byte,
 	}
 
 	var record struct {
-		Userid  string     `gorethink:"userid"`
-		AuthLvl auth.Level `gorethink:"authLvl"`
-		Secret  []byte     `gorethink:"secret"`
-		Expires time.Time  `gorethink:"expires"`
+		Userid  string     `json:"userid"`
+		AuthLvl auth.Level `json:"authLvl"`
+		Secret  []byte     `json:"secret"`
+		Expires time.Time  `json:"expires"`
 	}
 
 	if err = cursor.One(&record); err != nil {
@@ -460,7 +473,8 @@ func (a *adapter) AuthGetUniqueRecord(unique string) (t.Uid, auth.Level, []byte,
 
 // UserGet fetches a single user by user id. If user is not found it returns (nil, nil)
 func (a *adapter) UserGet(uid t.Uid) (*t.User, error) {
-	cursor, err := rdb.DB(a.dbName).Table("users").Get(uid.String()).Run(a.conn)
+	cursor, err := rdb.DB(a.dbName).Table("users").GetAll(uid.String()).
+		Filter(rdb.Row.HasFields("DeletedAt").Not()).Run(a.conn)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +498,8 @@ func (a *adapter) UserGetAll(ids ...t.Uid) ([]t.User, error) {
 	}
 
 	users := []t.User{}
-	if cursor, err := rdb.DB(a.dbName).Table("users").GetAll(uids...).Run(a.conn); err == nil {
+	if cursor, err := rdb.DB(a.dbName).Table("users").GetAll(uids...).
+		Filter(rdb.Row.HasFields("DeletedAt").Not()).Run(a.conn); err == nil {
 		defer cursor.Close()
 
 		var user t.User
@@ -501,21 +516,144 @@ func (a *adapter) UserGetAll(ids ...t.Uid) ([]t.User, error) {
 	return users, nil
 }
 
-func (a *adapter) UserDelete(uid t.Uid, soft bool) error {
+func (a *adapter) UserDelete(uid t.Uid, hard bool) error {
 	var err error
-	q := rdb.DB(a.dbName).Table("users").Get(uid.String())
-	if soft {
-		now := t.TimeNow()
-		_, err = q.Update(map[string]interface{}{"DeletedAt": now, "UpdatedAt": now}).RunWrite(a.conn)
+	if hard {
+		// Delete user's subscriptions in all topics.
+		if err = a.SubsDelForUser(uid, true); err != nil {
+			return err
+		}
+		log.Println("Subscriptions deleted")
+		// Can't delete user's messages in all topics because we cannot notify topics of such deletion.
+		// Or we have to delete these messages one by one.
+		// For now, just leave the messages there marked as sent by "not found" user.
+
+		// Delete topics where the user is the owner:
+
+		// 1. Delete dellog
+		// 2. Decrement fileuploads.
+		// 3. Delete all messages.
+		// 4. Delete subscriptions.
+		_, err = rdb.DB(a.dbName).Table("topics").GetAllByIndex("Owner", uid.String()).ForEach(
+			func(topic rdb.Term) rdb.Term {
+				return rdb.Expr([]interface{}{
+					// Delete dellog
+					rdb.DB(a.dbName).Table("dellog").Between(
+						[]interface{}{topic.Field("Id"), rdb.MinVal},
+						[]interface{}{topic.Field("Id"), rdb.MaxVal},
+						rdb.BetweenOpts{Index: "Topic_DelId"}).Delete(),
+					// Decrement fileuploads UseCounter
+					rdb.DB(a.dbName).Table("fileuploads").GetAll(
+						rdb.Args(
+							rdb.DB(a.dbName).Table("messages").Between(
+								[]interface{}{topic.Field("Id"), rdb.MinVal},
+								[]interface{}{topic.Field("Id"), rdb.MaxVal},
+								rdb.BetweenOpts{Index: "Topic_SeqId"}).
+								// Fetch messages with attachments only
+								Filter(func(msg rdb.Term) rdb.Term {
+									return msg.HasFields("Attachments")
+								}).
+								// Flatten arrays
+								ConcatMap(func(row rdb.Term) interface{} { return row.Field("Attachments") }).
+								CoerceTo("array"))).
+						Update(func(fu rdb.Term) interface{} {
+							return map[string]interface{}{"UseCount": fu.Field("UseCount").Default(1).Sub(1)}
+						}),
+					// Delete messages
+					rdb.DB(a.dbName).Table("messages").Between(
+						[]interface{}{topic.Field("Id"), rdb.MinVal},
+						[]interface{}{topic.Field("Id"), rdb.MaxVal},
+						rdb.BetweenOpts{Index: "Topic_SeqId"}).Delete(),
+					// Delete subscriptions
+					rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("Topic", topic.Field("Id")).Delete(),
+				})
+			}).RunWrite(a.conn)
+
+		log.Println("dellog, attachment, messages delete result:", err)
+
+		// And finally delete the topics.
+		// TODO: denormalize Owner into topic, add index on Owner.
+		if _, err = rdb.DB(a.dbName).Table("topics").GetAllByIndex("Owner", uid.String()).
+			Delete().RunWrite(a.conn); err != nil {
+			return err
+		}
+
+		// Delete user's authentication records.
+		if _, err = a.AuthDelAllRecords(uid); err != nil {
+			return err
+		}
+
+		// Delete credentials.
+		if err = a.CredDel(uid, ""); err != nil {
+			return err
+		}
+		// And finally delete the user.
+		_, err = rdb.DB(a.dbName).Table("users").Get(uid.String()).
+			Delete().RunWrite(a.conn)
 	} else {
-		_, err = q.Delete().RunWrite(a.conn)
+		// Disable user's subscriptions.
+		if err = a.SubsDelForUser(uid, false); err != nil {
+			return err
+		}
+
+		// Disable subscriptions for topics where the user is the owner.
+		// Disable topics where the user is the owner.
+		now := t.TimeNow()
+		disable := map[string]interface{}{"DeletedAt": now, "UpdatedAt": now}
+		if _, err = rdb.DB(a.dbName).Table("topics").GetAllByIndex("Owner", uid.String()).ForEach(
+			func(topic rdb.Term) rdb.Term {
+				return rdb.Expr([]interface{}{
+					rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("Topic", topic.Field("Id")).Update(disable),
+					rdb.DB(a.dbName).Table("topics").Get(topic.Field("Id")).Update(disable),
+				})
+			}).RunWrite(a.conn); err != nil {
+			return err
+		}
+
+		_, err = rdb.DB(a.dbName).Table("users").Get(uid.String()).Update(disable).RunWrite(a.conn)
 	}
 	return err
+}
+
+// UserGetDisabled returns ID of users who were soft-deleted since specified time.
+func (a *adapter) UserGetDisabled(since time.Time) ([]t.Uid, error) {
+	cursor, err := rdb.DB(a.dbName).Table("users").
+		Between(since, rdb.MaxVal, rdb.BetweenOpts{Index: "DeletedAt"}).Field("Id").Run(a.conn)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close()
+
+	var uids []t.Uid
+	var userId string
+	for cursor.Next(&userId) {
+		uids = append(uids, t.ParseUid(userId))
+	}
+
+	if err = cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	return uids, nil
 }
 
 // UserUpdate updates user object.
 func (a *adapter) UserUpdate(uid t.Uid, update map[string]interface{}) error {
 	_, err := rdb.DB(a.dbName).Table("users").Get(uid.String()).Update(update).RunWrite(a.conn)
+	return err
+}
+
+// UserUpdateTags append or resets user's tags
+func (a *adapter) UserUpdateTags(uid t.Uid, tags []string, reset bool) error {
+	if reset {
+		// Replace Tags with the new value
+		return a.UserUpdate(uid, map[string]interface{}{"Tags": tags})
+	}
+
+	// Add tags to the list.
+	_, err := rdb.DB(a.dbName).Table("users").Get(uid.String()).Update(
+		map[string]interface{}{"Tags": rdb.Row.Field("Tags").SetUnion(tags)}).RunWrite(a.conn)
+
 	return err
 }
 
@@ -588,6 +726,7 @@ func (a *adapter) TopicCreateP2P(initiator, invited *t.Subscription) error {
 	return a.TopicCreate(topic)
 }
 
+// TopicGet loads a single topic by name, if it exists. If the topic does not exist the call returns (nil, nil)
 func (a *adapter) TopicGet(topic string) (*t.Topic, error) {
 	// Fetch topic by name
 	cursor, err := rdb.DB(a.dbName).Table("topics").Get(topic).Run(a.conn)
@@ -700,7 +839,11 @@ func (a *adapter) TopicsForUser(uid t.Uid, keepDeleted bool, opts *t.QueryOpt) (
 
 	// Fetch p2p users and join to p2p tables
 	if len(usrq) > 0 {
-		cursor, err = rdb.DB(a.dbName).Table("users").GetAll(usrq...).Run(a.conn)
+		q = rdb.DB(a.dbName).Table("users").GetAll(usrq...)
+		if !keepDeleted {
+			q = q.Filter(rdb.Row.HasFields("DeletedAt").Not())
+		}
+		cursor, err = q.Run(a.conn)
 		if err != nil {
 			return nil, err
 		}
@@ -725,20 +868,29 @@ func (a *adapter) TopicsForUser(uid t.Uid, keepDeleted bool, opts *t.QueryOpt) (
 
 // UsersForTopic loads users subscribed to the given topic
 func (a *adapter) UsersForTopic(topic string, keepDeleted bool, opts *t.QueryOpt) ([]t.Subscription, error) {
+	tcat := t.GetTopicCat(topic)
+
 	// Fetch topic subscribers
 	// Fetch all subscribed users. The number of users is not large
 	q := rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("Topic", topic)
-	if !keepDeleted {
-		// Filter out rows with DeletedAt being not null
+	if !keepDeleted && tcat != t.TopicCatP2P {
+		// Filter out rows with DeletedAt being not null.
+		// P2P topics must load all subscriptions otherwise it will be impossible
+		// to swap Public values.
 		q = q.Filter(rdb.Row.HasFields("DeletedAt").Not())
 	}
+
 	limit := maxSubscribers
+	var oneUser t.Uid
 	if opts != nil {
 		// Ignore IfModifiedSince - we must return all entries
 		// Those unmodified will be stripped of Public & Private.
 
 		if !opts.User.IsZero() {
-			q = q.Filter(rdb.Row.Field("User").Eq(opts.User.String()))
+			if tcat != t.TopicCatP2P {
+				q = q.Filter(rdb.Row.Field("User").Eq(opts.User.String()))
+			}
+			oneUser = opts.User
 		}
 		if opts.Limit > 0 && opts.Limit < limit {
 			limit = opts.Limit
@@ -767,7 +919,8 @@ func (a *adapter) UsersForTopic(topic string, keepDeleted bool, opts *t.QueryOpt
 		subs = make([]t.Subscription, 0, len(usrq))
 
 		// Fetch users by a list of subscriptions
-		cursor, err = rdb.DB(a.dbName).Table("users").GetAll(usrq...).Run(a.conn)
+		cursor, err = rdb.DB(a.dbName).Table("users").GetAll(usrq...).
+			Filter(rdb.Row.HasFields("DeletedAt").Not()).Run(a.conn)
 		if err != nil {
 			return nil, err
 		}
@@ -787,15 +940,44 @@ func (a *adapter) UsersForTopic(topic string, keepDeleted bool, opts *t.QueryOpt
 	if t.GetTopicCat(topic) == t.TopicCatP2P && len(subs) > 0 {
 		// Swap public values of P2P topics as expected.
 		if len(subs) == 1 {
+			// User is deleted. Nothing we can do.
 			subs[0].SetPublic(nil)
 		} else {
 			pub := subs[0].GetPublic()
 			subs[0].SetPublic(subs[1].GetPublic())
 			subs[1].SetPublic(pub)
 		}
+
+		// Remove deleted and unneeded subscriptions
+		if !keepDeleted || !oneUser.IsZero() {
+			var xsubs []t.Subscription
+			for i := range subs {
+				if (subs[i].DeletedAt != nil && !keepDeleted) || (!oneUser.IsZero() && subs[i].Uid() != oneUser) {
+					continue
+				}
+				xsubs = append(xsubs, subs[i])
+			}
+			subs = xsubs
+		}
 	}
 
 	return subs, nil
+}
+
+// OwnTopics loads a slice of topic names where the user is the owner.
+func (a *adapter) OwnTopics(uid t.Uid, opts *t.QueryOpt) ([]string, error) {
+	cursor, err := rdb.DB(a.dbName).Table("topics").GetAllByIndex("Owner", uid.String()).
+		Filter(rdb.Row.HasFields("DeletedAt").Not()).Field("Id").Run(a.conn)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	var name string
+	for cursor.Next(&name) {
+		names = append(names, name)
+	}
+	cursor.Close()
+	return names, nil
 }
 
 func (a *adapter) TopicShare(shares []*t.Subscription) (int, error) {
@@ -818,11 +1000,32 @@ func (a *adapter) TopicShare(shares []*t.Subscription) (int, error) {
 	return resp.Inserted + resp.Replaced, err
 }
 
-func (a *adapter) TopicDelete(topic string) error {
-	_, err := rdb.DB(a.dbName).Table("topics").Get(topic).Delete().RunWrite(a.conn)
+func (a *adapter) TopicDelete(topic string, hard bool) error {
+	var err error
+	if err = a.SubsDelForTopic(topic, hard); err != nil {
+		return err
+	}
+
+	if hard {
+		if err = a.MessageDeleteList(topic, nil); err != nil {
+			return err
+		}
+	}
+
+	q := rdb.DB(a.dbName).Table("topics").Get(topic)
+	if hard {
+		_, err = q.Delete().RunWrite(a.conn)
+	} else {
+		now := t.TimeNow()
+		_, err = q.Update(map[string]interface{}{
+			"UpdatedAt": now,
+			"DeletedAt": now,
+		}).RunWrite(a.conn)
+	}
 	return err
 }
 
+// TopicUpdateOnMessage deserializes message-related values into topic.
 func (a *adapter) TopicUpdateOnMessage(topic string, msg *t.Message) error {
 
 	update := struct {
@@ -830,19 +1033,8 @@ func (a *adapter) TopicUpdateOnMessage(topic string, msg *t.Message) error {
 		TouchedAt time.Time
 	}{msg.SeqId, msg.CreatedAt}
 
-	// FIXME(gene): remove 'me' update; no longer relevant
-	var err error
-	if strings.HasPrefix(topic, "usr") {
-		// Topic is passed as usrABCD, but the 'users' table expects Id without the 'usr' prefix.
-		user := t.ParseUserId(topic).String()
-		_, err = rdb.DB(a.dbName).Table("users").Get(user).
-			Update(update, rdb.UpdateOpts{Durability: "soft"}).RunWrite(a.conn)
-
-		// All other messages
-	} else {
-		_, err = rdb.DB(a.dbName).Table("topics").Get(topic).
-			Update(update, rdb.UpdateOpts{Durability: "soft"}).RunWrite(a.conn)
-	}
+	_, err := rdb.DB(a.dbName).Table("topics").Get(topic).
+		Update(update, rdb.UpdateOpts{Durability: "soft"}).RunWrite(a.conn)
 
 	return err
 }
@@ -852,7 +1044,13 @@ func (a *adapter) TopicUpdate(topic string, update map[string]interface{}) error
 	return err
 }
 
-// Get a subscription of a user to a topic
+func (a *adapter) TopicOwnerChange(topic string, newOwner, oldOwner t.Uid) error {
+	_, err := rdb.DB(a.dbName).Table("topics").Get(topic).
+		Update(map[string]interface{}{"Owner": newOwner}).RunWrite(a.conn)
+	return err
+}
+
+// SubscriptionGet returns a subscription of a user to a topic
 func (a *adapter) SubscriptionGet(topic string, user t.Uid) (*t.Subscription, error) {
 
 	cursor, err := rdb.DB(a.dbName).Table("subscriptions").Get(topic + ":" + user.String()).Run(a.conn)
@@ -987,26 +1185,34 @@ func (a *adapter) SubsDelete(topic string, user t.Uid) error {
 }
 
 // SubsDelForTopic marks all subscriptions to the given topic as deleted
-func (a *adapter) SubsDelForTopic(topic string) error {
-	now := t.TimeNow()
-	update := map[string]interface{}{
-		"UpdatedAt": now,
-		"DeletedAt": now,
+func (a *adapter) SubsDelForTopic(topic string, hard bool) error {
+	var err error
+	q := rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("Topic", topic)
+	if hard {
+		_, err = q.Delete().RunWrite(a.conn)
+	} else {
+		now := t.TimeNow()
+		_, err = q.Update(map[string]interface{}{
+			"UpdatedAt": now,
+			"DeletedAt": now,
+		}).RunWrite(a.conn)
 	}
-	_, err := rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("Topic", topic).
-		Update(update).RunWrite(a.conn)
 	return err
 }
 
 // SubsDelForUser marks all subscriptions of a given user as deleted
-func (a *adapter) SubsDelForUser(user t.Uid) error {
-	now := t.TimeNow()
-	update := map[string]interface{}{
-		"UpdatedAt": now,
-		"DeletedAt": now,
+func (a *adapter) SubsDelForUser(user t.Uid, hard bool) error {
+	var err error
+	if hard {
+	} else {
+		now := t.TimeNow()
+		update := map[string]interface{}{
+			"UpdatedAt": now,
+			"DeletedAt": now,
+		}
+		_, err = rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("User", user.String()).
+			Update(update).RunWrite(a.conn)
 	}
-	_, err := rdb.DB(a.dbName).Table("subscriptions").GetAllByIndex("User", user.String()).
-		Update(update).RunWrite(a.conn)
 	return err
 }
 
@@ -1037,6 +1243,7 @@ func (a *adapter) FindUsers(uid t.Uid, req, opt []string) ([]t.Subscription, err
 	query := rdb.DB(a.dbName).
 		Table("users").
 		GetAllByIndex("Tags", allTags...).
+		Filter(rdb.Row.HasFields("DeletedAt").Not()).
 		Pluck("Id", "Access", "CreatedAt", "UpdatedAt", "Public", "Tags").
 		Group("Id").
 		Ungroup().
@@ -1104,6 +1311,7 @@ func (a *adapter) FindTopics(req, opt []string) ([]t.Subscription, error) {
 	query := rdb.DB(a.dbName).
 		Table("topics").
 		GetAllByIndex("Tags", allTags...).
+		Filter(rdb.Row.HasFields("DeletedAt").Not()).
 		Pluck("Id", "Access", "CreatedAt", "UpdatedAt", "Public", "Tags").
 		Group("Id").
 		Ungroup().
@@ -1261,18 +1469,39 @@ func (a *adapter) MessageGetDeleted(topic string, forUser t.Uid, opts *t.QueryOp
 	return dmsgs, nil
 }
 
+func (a *adapter) messagesHardDelete(topic string) error {
+	var err error
+
+	// TODO: handle file uploads
+
+	if _, err = rdb.DB(a.dbName).Table("dellog").Between(
+		[]interface{}{topic, rdb.MinVal},
+		[]interface{}{topic, rdb.MaxVal},
+		rdb.BetweenOpts{Index: "Topic_DelId"}).Delete().RunWrite(a.conn); err != nil {
+		return err
+	}
+
+	q := rdb.DB(a.dbName).Table("messages").Between(
+		[]interface{}{topic, rdb.MinVal},
+		[]interface{}{topic, rdb.MaxVal},
+		rdb.BetweenOpts{Index: "Topic_SeqId"})
+
+	if err = a.fileDecrementUseCounter(q); err != nil {
+		return err
+	}
+
+	_, err = q.Delete().RunWrite(a.conn)
+
+	return err
+}
+
 // MessageDeleteList deletes messages in the given topic with seqIds from the list
 func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 	var indexVals []interface{}
 	var err error
 
-	query := rdb.DB(a.dbName).Table("messages")
 	if toDel == nil {
-		// Whole topic is being deleted, thus also deleting all messages
-		_, err = query.Between(
-			[]interface{}{topic, rdb.MinVal},
-			[]interface{}{topic, rdb.MaxVal},
-			rdb.BetweenOpts{Index: "Topic_SeqId"}).Delete().RunWrite(a.conn)
+		err = a.messagesHardDelete(topic)
 	} else {
 		// Only some messages are being deleted
 		toDel.SetUid(store.GetUid())
@@ -1283,6 +1512,7 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 			return err
 		}
 
+		query := rdb.DB(a.dbName).Table("messages")
 		if len(toDel.SeqIdRanges) > 1 || toDel.SeqIdRanges[0].Hi <= toDel.SeqIdRanges[0].Low {
 			for _, rng := range toDel.SeqIdRanges {
 				if rng.Hi == 0 {
@@ -1305,38 +1535,13 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 		query = query.Filter(rdb.Row.HasFields("DelId").Not())
 		if toDel.DeletedFor == "" {
 			// First decrement use counter for attachments.
-			/*
-						r.db("test").table("one")
-						.getAll(
-							r.args(r.db("test").table("zero")
-								.getAll(
-									"07e2c6fe-ac91-49cb-9834-ff34bf50aad1",
-				  					"0098a829-6da5-4f7b-8432-32b40de9ab3b",
-									"0926e7dd-321a-49cb-adb1-7a705d9d9a78",
-									"8e195450-babd-4954-a8fb-0cc414b43156")
-								.filter(r.row.hasFields("att"))
-								.concatMap(function(row) { return row.getField("att"); })
-								.coerceTo("array"))
-							)
-						.update({useCount: r.row.getField("useCount").default(0).add(1)})
-			*/
-
-			rdb.DB(a.dbName).Table("fileuploads").GetAll(
-				rdb.Args(
-					query.
-						// Fetch messages with attachments only
-						Filter(rdb.Row.HasFields("Attachments")).
-						// Flatten arrays
-						ConcatMap(func(row rdb.Term) interface{} { return row.Field("Attachments") }).
-						CoerceTo("array"))).
-				// Decrement UseCount.
-				Update(map[string]interface{}{"UseCount": rdb.Row.Field("UseCount").Default(0).Sub(1)}).
-				RunWrite(a.conn)
-			// Hard-delete individual messages. Message is not deleted but all fields with content
-			// are replaced with nulls.
-			_, err = query.Update(map[string]interface{}{
-				"DeletedAt": t.TimeNow(), "DelId": toDel.DelId, "From": nil,
-				"Head": nil, "Content": nil, "Attachments": nil}).RunWrite(a.conn)
+			if err = a.fileDecrementUseCounter(query); err == nil {
+				// Hard-delete individual messages. Message is not deleted but all fields with content
+				// are replaced with nulls.
+				_, err = query.Update(map[string]interface{}{
+					"DeletedAt": t.TimeNow(), "DelId": toDel.DelId, "From": nil,
+					"Head": nil, "Content": nil, "Attachments": nil}).RunWrite(a.conn)
+			}
 
 		} else {
 			// Soft-deleting: adding DelId to DeletedFor
@@ -1353,11 +1558,12 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 					User:  toDel.DeletedFor,
 					DelId: toDel.DelId})}).RunWrite(a.conn)
 		}
-	}
 
-	if err != nil && toDel != nil {
-		rdb.DB(a.dbName).Table("dellog").Get(toDel.Id).
-			Delete(rdb.DeleteOpts{Durability: "soft", ReturnChanges: false}).RunWrite(a.conn)
+		// If operation has failed, remove dellog record.
+		if err != nil {
+			rdb.DB(a.dbName).Table("dellog").Get(toDel.Id).
+				Delete(rdb.DeleteOpts{Durability: "soft", ReturnChanges: false}).RunWrite(a.conn)
+		}
 	}
 
 	return err
@@ -1484,8 +1690,14 @@ func (a *adapter) DeviceGetAll(uids ...t.Uid) (map[t.Uid][]t.DeviceDef, int, err
 }
 
 func (a *adapter) DeviceDelete(uid t.Uid, deviceID string) error {
-	_, err := rdb.DB(a.dbName).Table("users").Get(uid.String()).Replace(rdb.Row.Without(
-		map[string]string{"Devices": deviceHasher(deviceID)})).RunWrite(a.conn)
+	var err error
+	q := rdb.DB(a.dbName).Table("users").Get(uid.String())
+	if deviceID == "" {
+		q = q.Update(map[string]interface{}{"Devices": nil})
+	} else {
+		q = q.Replace(rdb.Row.Without(map[string]string{"Devices": deviceHasher(deviceID)}))
+	}
+	_, err = q.RunWrite(a.conn)
 	return err
 }
 
@@ -1640,7 +1852,7 @@ func (a *adapter) FileGet(fid string) (*t.FileDef, error) {
 
 }
 
-// FileDeleteUnused
+// FileDeleteUnused deletes orphaned file uploads.
 func (a *adapter) FileDeleteUnused(olderThan time.Time, limit int) ([]string, error) {
 	q := rdb.DB(a.dbName).Table("fileuploads").GetAllByIndex("UseCount", 0)
 	if !olderThan.IsZero() {
@@ -1669,6 +1881,37 @@ func (a *adapter) FileDeleteUnused(olderThan time.Time, limit int) ([]string, er
 	_, err = q.Delete().RunWrite(a.conn)
 
 	return locations, err
+}
+
+// Given a select query against 'messages' table, decrement corresponding use counter in 'fileuploads' table.
+func (a *adapter) fileDecrementUseCounter(msgQuery rdb.Term) error {
+	/*
+		r.db("test").table("one")
+			.getAll(
+				r.args(r.db("test").table("zero")
+					.getAll(
+						"07e2c6fe-ac91-49cb-9834-ff34bf50aad1",
+			  			"0098a829-6da5-4f7b-8432-32b40de9ab3b",
+						"0926e7dd-321a-49cb-adb1-7a705d9d9a78",
+						"8e195450-babd-4954-a8fb-0cc414b43156")
+					.filter(r.row.hasFields("att"))
+					.concatMap(function(row) { return row.getField("att"); })
+					.coerceTo("array"))
+				)
+			.update({useCount: r.row.getField("useCount").default(0).add(1)})
+	*/
+	_, err := rdb.DB(a.dbName).Table("fileuploads").GetAll(
+		rdb.Args(
+			msgQuery.
+				// Fetch messages with attachments only
+				Filter(rdb.Row.HasFields("Attachments")).
+				// Flatten arrays
+				ConcatMap(func(row rdb.Term) interface{} { return row.Field("Attachments") }).
+				CoerceTo("array"))).
+		// Decrement UseCount.
+		Update(map[string]interface{}{"UseCount": rdb.Row.Field("UseCount").Default(1).Sub(1)}).
+		RunWrite(a.conn)
+	return err
 }
 
 func init() {

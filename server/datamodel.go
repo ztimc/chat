@@ -53,7 +53,7 @@ type MsgSetSub struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// MsgSetDesc is a C2S in set.what == "desc" and sub.init message
+// MsgSetDesc is a C2S in set.what == "desc", acc, sub message
 type MsgSetDesc struct {
 	DefaultAcs *MsgDefaultAcsMode `json:"defacs,omitempty"` // default access mode
 	Public     interface{}        `json:"public,omitempty"`
@@ -68,12 +68,6 @@ type MsgSetQuery struct {
 	Sub *MsgSetSub `json:"sub,omitempty"`
 	// Indexable tags for user discovery
 	Tags []string `json:"tags,omitempty"`
-}
-
-// MsgFindQuery is a format of fndXXX.private.
-type MsgFindQuery struct {
-	// List of tags to query for. Tags of the form "email:jdoe@example.com" or "tel:18005551212"
-	Tags []string `json:"tags"`
 }
 
 // MsgDelRange is either an individual ID (HiId=0) or a randge of deleted IDs, low end inclusive (closed),
@@ -97,6 +91,8 @@ type MsgClientHi struct {
 	DeviceID string `json:"dev,omitempty"`
 	// ISO 639-1 human language of the connected device
 	Lang string `json:"lang,omitempty"`
+	// Platform code: ios, android, web.
+	Platform string `json:"platf,omitempty"`
 }
 
 // MsgAccCred is an account credential, provided or verified.
@@ -166,9 +162,13 @@ const (
 	constMsgMetaData
 	constMsgMetaTags
 	constMsgMetaDel
-	constMsgDelTopic
+)
+
+const (
+	constMsgDelTopic = iota + 1
 	constMsgDelMsg
 	constMsgDelSub
+	constMsgDelUser
 )
 
 func parseMsgClientMeta(params string) int {
@@ -194,8 +194,6 @@ func parseMsgClientMeta(params string) int {
 }
 
 func parseMsgClientDel(params string) int {
-	var bits int
-
 	switch params {
 	case "", "msg":
 		return constMsgDelMsg
@@ -203,10 +201,12 @@ func parseMsgClientDel(params string) int {
 		return constMsgDelTopic
 	case "sub":
 		return constMsgDelSub
+	case "user":
+		return constMsgDelUser
 	default:
 		// ignore
 	}
-	return bits
+	return 0
 }
 
 // MsgDefaultAcsMode is a topic default access mode.
@@ -248,15 +248,18 @@ type MsgClientSet struct {
 // MsgClientDel delete messages or topic {del}.
 type MsgClientDel struct {
 	Id    string `json:"id,omitempty"`
-	Topic string `json:"topic"`
-	// What to delete, either "msg" to delete messages (default) or "topic" to delete the topic or "sub"
-	// to delete a subscription to topic.
+	Topic string `json:"topic,omitempty"`
+	// What to delete:
+	// * "msg" to delete messages (default)
+	// * "topic" to delete the topic
+	// * "sub" to delete a subscription to topic.
+	// * "user" to delete or disable user.
 	What string `json:"what"`
 	// Delete messages with these IDs (either one by one or a set of ranges)
 	DelSeq []MsgDelRange `json:"delseq,omitempty"`
-	// User ID of the subscription to delete
+	// User ID of the user or subscription to delete
 	User string `json:"user,omitempty"`
-	// Request to hard-delete messages for all users, if such option is available.
+	// Request to hard-delete objects (i.e. delete messages for all users), if such option is available.
 	Hard bool `json:"hard,omitempty"`
 }
 
@@ -841,12 +844,12 @@ func ErrNotImplemented(id, topic string, ts time.Time) *ServerComMessage {
 		Timestamp: ts}}
 }
 
-// ErrClusterNodeUnreachable topic is handled by another cluster node and than node is unreachable (502).
-func ErrClusterNodeUnreachable(id, topic string, ts time.Time) *ServerComMessage {
+// ErrClusterUnreachable in-cluster communication has failed (502).
+func ErrClusterUnreachable(id, topic string, ts time.Time) *ServerComMessage {
 	return &ServerComMessage{Ctrl: &MsgServerCtrl{
 		Id:        id,
 		Code:      http.StatusBadGateway, // 502
-		Text:      "unreachable",
+		Text:      "cluster unreachable",
 		Topic:     topic,
 		Timestamp: ts}}
 }

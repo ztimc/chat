@@ -26,7 +26,7 @@ from tinode_grpc import pb
 from tinode_grpc import pbx
 
 APP_NAME = "Tino-chatbot"
-APP_VERSION = "1.1"
+APP_VERSION = "1.1.3"
 LIB_VERSION = pkg_resources.get_distribution("tinode_grpc").version
 
 # User ID of the current user
@@ -34,6 +34,9 @@ botUID = None
 
 # Dictionary wich contains lambdas to be executed when server response is received
 onCompletion = {}
+
+# This is needed for gRPC ssl to work correctly.
+os.environ["GRPC_SSL_CIPHER_SUITES"] = "HIGH+ECDSA"
 
 # Add bundle for future execution
 def add_future(tid, bundle):
@@ -156,7 +159,7 @@ def leave(topic):
 def publish(topic, text):
     tid = next_id()
     return pb.ClientMsg(pub=pb.ClientPub(id=tid, topic=topic, no_echo=True,
-		content=json.dumps(text).encode('utf-8')))
+        head={"auto": json.dumps(True).encode('utf-8')}, content=json.dumps(text).encode('utf-8')))
 
 def note_read(topic, seq):
     return pb.ClientMsg(note=pb.ClientNote(topic=topic, what=pb.READ, seq_id=seq))
@@ -168,15 +171,24 @@ def init_server(listen):
     server.add_insecure_port(listen)
     server.start()
 
+    print("Plugin server running at '"+listen+"'")
+
     return server
 
-def init_client(addr, schema, secret, cookie_file_name):
-    print("Connecting to server at", addr)
+def init_client(addr, schema, secret, cookie_file_name, secure, ssl_host):
+    print("Connecting to", "secure" if secure else "", "server at", addr,
+        "SNI="+ssl_host if ssl_host else "")
 
-    channel = grpc.insecure_channel(addr)
-    stub = pbx.NodeStub(channel)
+    channel = None
+    if secure:
+        opts = (('grpc.ssl_target_name_override', ssl_host),) if ssl_host else None
+        channel = grpc.secure_channel(addr, grpc.ssl_channel_credentials(), opts)
+    else:
+        channel = grpc.insecure_channel(addr)
+
     # Call the server
-    stream = stub.MessageLoop(client_generate())
+    stream = pbx.NodeStub(channel).MessageLoop(client_generate())
+
     # Session initialization sequence: {hi}, {login}, {sub topic='me'}
     client_post(hello())
     client_post(login(cookie_file_name, schema, secret))
@@ -301,7 +313,7 @@ def run(args):
         server = init_server(args.listen)
 
         # Initialize and launch client
-        client = init_client(args.host, schema, secret, args.login_cookie)
+        client = init_client(args.host, schema, secret, args.login_cookie, args.ssl, args.ssl_host)
 
         # Setup closure for graceful termination
         def exit_gracefully(signo, stack_frame):
@@ -320,7 +332,7 @@ def run(args):
             client_message_loop(client)
             time.sleep(3)
             client_reset()
-            client = init_client(args.host, schema, secret, args.login_cookie)
+            client = init_client(args.host, schema, secret, args.login_cookie, args.ssl, args.ssl_host)
 
         # Close connections gracefully before exiting
         server.stop(None)
@@ -338,6 +350,8 @@ if __name__ == '__main__':
     print(purpose)
     parser = argparse.ArgumentParser(description=purpose)
     parser.add_argument('--host', default='localhost:6061', help='address of Tinode server gRPC endpoint')
+    parser.add_argument('--ssl', action='store_true', help='use SSL to connect to the server')
+    parser.add_argument('--ssl-host', help='SSL host name to use instead of default (useful for connecting to localhost)')
     parser.add_argument('--listen', default='0.0.0.0:40051', help='address to listen on for incoming Plugin API calls')
     parser.add_argument('--login-basic', help='login using basic authentication username:password')
     parser.add_argument('--login-token', help='login using token authentication')

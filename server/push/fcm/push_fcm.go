@@ -33,13 +33,14 @@ type Handler struct {
 }
 
 type configType struct {
-	Enabled         bool            `json:"enabled"`
-	Buffer          int             `json:"buffer"`
-	Credentials     json.RawMessage `json:"credentials"`
-	CredentialsFile string          `json:"credentials_file"`
-	TimeToLive      uint            `json:"time_to_live,omitempty"`
-	Icon            string          `json:"icon,omitempty"`
-	IconColor       string          `json:"icon_color,omitempty"`
+	Enabled                    bool            `json:"enabled"`
+	Buffer                     int             `json:"buffer"`
+	Credentials                json.RawMessage `json:"credentials"`
+	CredentialsFile            string          `json:"credentials_file"`
+	TimeToLive                 uint            `json:"time_to_live,omitempty"`
+	IncludeAndroidNotification bool            `json:"include_android_notification,omitempty"`
+	Icon                       string          `json:"icon,omitempty"`
+	IconColor                  string          `json:"icon_color,omitempty"`
 }
 
 // Init initializes the push handler
@@ -132,7 +133,7 @@ func sendNotifications(rcpt *push.Receipt, config *configType) {
 
 	data, _ := payloadToData(&rcpt.Payload)
 	if data == nil || data["content"] == "" {
-		// Could not parse payload or empty payload.
+		log.Println("fcm push: could not parse payload or empty payload")
 		return
 	}
 
@@ -150,7 +151,7 @@ func sendNotifications(rcpt *push.Receipt, config *configType) {
 
 	devices, count, err := store.Devices.GetAll(uids...)
 	if err != nil {
-		log.Println("fcm push db error", err)
+		log.Println("fcm push: db error", err)
 		return
 	}
 	if count == 0 {
@@ -167,12 +168,15 @@ func sendNotifications(rcpt *push.Receipt, config *configType) {
 				}
 				if d.Platform == "android" {
 					msg.Android = &fcm.AndroidConfig{
-						Notification: &fcm.AndroidNotification{
+						Priority: "high",
+					}
+					if config.IncludeAndroidNotification {
+						msg.Android.Notification = &fcm.AndroidNotification{
 							Title: "New message",
 							Body:  data["content"],
 							Icon:  config.Icon,
 							Color: config.IconColor,
-						},
+						}
 					}
 				}
 
@@ -198,16 +202,16 @@ func sendNotifications(rcpt *push.Receipt, config *configType) {
 
 					if fcm.IsMismatchedCredential(err) || fcm.IsInvalidArgument(err) {
 						// Config errors
-						log.Println("fcm push failed", err)
+						log.Println("fcm push: failed", err)
 						return
 					}
 
 					if fcm.IsRegistrationTokenNotRegistered(err) {
 						// Token is no longer valid.
 						store.Devices.Delete(uid, d.DeviceId)
-						log.Println("fcm invalid token", err)
+						log.Println("fcm push: invalid token", err)
 					} else {
-						log.Println("fcm push", err)
+						log.Println("fcm push:", err)
 					}
 				}
 			}

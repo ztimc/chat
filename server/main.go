@@ -12,7 +12,6 @@ package main
 
 import (
 	"encoding/json"
-	"expvar"
 	"flag"
 	"log"
 	"net/http"
@@ -32,6 +31,7 @@ import (
 	"github.com/tinode/chat/server/auth"
 	_ "github.com/tinode/chat/server/auth/anon"
 	_ "github.com/tinode/chat/server/auth/basic"
+	_ "github.com/tinode/chat/server/auth/rest"
 	_ "github.com/tinode/chat/server/auth/token"
 
 	// Database backends
@@ -115,6 +115,8 @@ var globals struct {
 	cluster      *Cluster
 	grpcServer   *grpc.Server
 	plugins      []Plugin
+	statsUpdate  chan *varUpdate
+
 	// Credential validators.
 	validators map[string]credValidator
 	// Validators required for each auth level.
@@ -130,6 +132,8 @@ var globals struct {
 	// Add Strict-Transport-Security to headers, the value signifies age.
 	// Empty string "" turns it off
 	tlsStrictMaxAge string
+	// Listen for connections on this address:port and redirect them to HTTPS port.
+	tlsRedirectHTTP string
 	// Maximum message size allowed from peer.
 	maxMessageSize int64
 	// Maximum number of group topic subscribers.
@@ -171,6 +175,8 @@ type configType struct {
 	// Could be blank: if TLS is not configured, will use ":80", otherwise ":443".
 	// Can be overridden from the command line, see option --listen.
 	Listen string `json:"listen"`
+	// Cache-Control value for static content.
+	CacheControl int `json:"cache_control"`
 	// Address:port to listen for gRPC clients. If blank gRPC support will not be initialized.
 	// Could be overridden from the command line with --grpc_listen.
 	GrpcListen string `json:"grpc_listen"`
@@ -189,6 +195,8 @@ type configType struct {
 	MaskedTagNamespaces []string `json:"masked_tags"`
 	// Maximum number of indexable tags
 	MaxTagCount int `json:"max_tag_count"`
+	// URL path for exposing runtime stats. Disabled if the path is blank.
+	ExpvarPath string `json:"expvar"`
 
 	// Configs for subsystems
 	Cluster   json.RawMessage             `json:"cluster_config"`
@@ -217,10 +225,10 @@ func main() {
 	var staticPath = flag.String("static_data", defaultStaticPath, "Path to directory with static files to be served.")
 	var listenOn = flag.String("listen", "", "Override address and port to listen on for HTTP(S) clients.")
 	var listenGrpc = flag.String("grpc_listen", "", "Override address and port to listen on for gRPC clients.")
-	var tlsEnabled = flag.Bool("tls_enabled", false, "Override config value for enabling TLS")
-	var clusterSelf = flag.String("cluster_self", "", "Override the name of the current cluster node")
-	var expvarPath = flag.String("expvar", "", "Expose runtime stats at the given endpoint, e.g. /debug/vars. Disabled if not set")
-	var pprofFile = flag.String("pprof", "", "File name to save profiling info to. Disabled if not set")
+	var tlsEnabled = flag.Bool("tls_enabled", false, "Override config value for enabling TLS.")
+	var clusterSelf = flag.String("cluster_self", "", "Override the name of the current cluster node.")
+	var expvarPath = flag.String("expvar", "", "Override the path where runtime stats are exposed.")
+	var pprofFile = flag.String("pprof", "", "File name to save profiling info to. Disabled if not set.")
 	flag.Parse()
 
 	*configfile = toAbsolutePath(rootpath, *configfile)
@@ -276,26 +284,42 @@ func main() {
 	// API key signing secret
 	globals.apiKeySalt = config.APIKeySalt
 
-	for name, jsconf := range config.Auth {
-		if name != "logical_names" {
-			if authhdl := store.GetAuthHandler(name); authhdl == nil {
-				log.Fatal("Config provided for unknown authentication scheme '" + name + "'")
-			} else if err := authhdl.Init(string(jsconf)); err != nil {
-				log.Fatal("Failed to init auth scheme", err)
-			}
-		}
-	}
-
 	err = store.InitAuthLogicalNames(config.Auth["logical_names"])
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	authNames := store.GetAuthNames()
+	for _, name := range authNames {
+		if authhdl := store.GetLogicalAuthHandler(name); authhdl == nil {
+			log.Fatalln("Unknown authenticator", name)
+		} else if jsconf := config.Auth[name]; jsconf != nil {
+			if err := authhdl.Init(string(jsconf), name); err != nil {
+				log.Fatalln("Failed to init auth scheme", name+":", err)
+			}
+		}
+	}
+
+	// List of tag namespaces for user discovery which cannot be changed directly
+	// by the client, e.g. 'email' or 'tel'.
+	globals.immutableTagNS = make(map[string]bool)
+
+	// Process validators.
 	for name, vconf := range config.Validator {
+		// Check if validator is restrictive. If so, add validator name to the list of restricted tags.
+		// The namespace can be restricted even if the validator is disabled.
+		if vconf.AddToTags {
+			if strings.Contains(name, ":") {
+				log.Fatal("acc_validation names should not contain character ':'")
+			}
+			globals.immutableTagNS[name] = true
+		}
+
 		if len(vconf.Required) == 0 {
 			// Skip disabled validator.
 			continue
 		}
+
 		var reqLevels []auth.Level
 		for _, req := range vconf.Required {
 			lvl := auth.ParseAuthLevel(req)
@@ -331,23 +355,28 @@ func main() {
 			addToTags:       vconf.AddToTags}
 	}
 
-	// List of tag namespaces for user discovery which cannot be changed directly
-	// by the client, e.g. 'email' or 'tel'.
-	globals.immutableTagNS = make(map[string]bool, len(config.Validator))
-	for tag := range config.Validator {
-		if strings.Index(tag, ":") >= 0 {
-			log.Fatal("acc_validation names should not contain character ':'")
-		}
-		globals.immutableTagNS[tag] = true
-	}
-
 	// Partially restricted tag namespaces
 	globals.maskedTagNS = make(map[string]bool, len(config.MaskedTagNamespaces))
 	for _, tag := range config.MaskedTagNamespaces {
-		if strings.Index(tag, ":") >= 0 {
+		if strings.Contains(tag, ":") {
 			log.Fatal("masked_tags namespaces should not contain character ':'")
 		}
 		globals.maskedTagNS[tag] = true
+	}
+
+	var tags []string
+	for tag := range globals.immutableTagNS {
+		tags = append(tags, "'"+tag+"'")
+	}
+	if len(tags) > 0 {
+		log.Println("Restricted tags:", tags)
+	}
+	tags = nil
+	for tag := range globals.maskedTagNS {
+		tags = append(tags, "'"+tag+"'")
+	}
+	if len(tags) > 0 {
+		log.Println("Masked tags:", tags)
 	}
 
 	// Maximum message size
@@ -410,6 +439,11 @@ func main() {
 		globals.cluster.start()
 	}
 
+	tlsConfig, err := parseTLSConfig(*tlsEnabled, config.TLS)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	// Intialize plugins
 	pluginsInit(config.Plugin)
 
@@ -417,7 +451,7 @@ func main() {
 	if *listenGrpc == "" {
 		*listenGrpc = config.GrpcListen
 	}
-	if globals.grpcServer, err = serveGrpc(*listenGrpc); err != nil {
+	if globals.grpcServer, err = serveGrpc(*listenGrpc, tlsConfig); err != nil {
 		log.Fatal(err)
 	}
 
@@ -448,15 +482,17 @@ func main() {
 			}
 		}
 		mux.Handle(staticMountPoint,
-			// Optionally add Strict-Transport_security to the response
-			hstsHandler(
-				// Add gzip compression
-				gh.CompressHandler(
-					// And add custom formatter of errors.
-					httpErrorHandler(
-						// Remove mount point prefix
-						http.StripPrefix(staticMountPoint,
-							http.FileServer(http.Dir(*staticPath)))))))
+			// Add optional Cache-Control header
+			cacheControlHandler(config.CacheControl,
+				// Optionally add Strict-Transport_security to the response
+				hstsHandler(
+					// Add gzip compression
+					gh.CompressHandler(
+						// And add custom formatter of errors.
+						httpErrorHandler(
+							// Remove mount point prefix
+							http.StripPrefix(staticMountPoint,
+								http.FileServer(http.Dir(*staticPath))))))))
 		log.Printf("Serving static content from '%s' at '%s'", *staticPath, staticMountPoint)
 	} else {
 		log.Println("Static content is disabled")
@@ -479,12 +515,13 @@ func main() {
 		mux.HandleFunc("/", serve404)
 	}
 
-	if *expvarPath != "" {
-		mux.Handle(*expvarPath, expvar.Handler())
-		log.Printf("Debug variables exposed at '%s'", *expvarPath)
+	evpath := *expvarPath
+	if evpath == "" {
+		evpath = config.ExpvarPath
 	}
+	statsInit(mux, evpath)
 
-	if err = listenAndServe(config.Listen, mux, *tlsEnabled, string(config.TLS), signalHandler()); err != nil {
+	if err = listenAndServe(config.Listen, mux, tlsConfig, signalHandler()); err != nil {
 		log.Fatal(err)
 	}
 }

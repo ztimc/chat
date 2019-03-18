@@ -7,6 +7,7 @@ The chat bot subscribes to events stream using Plugin API and logs in as a regul
 
 Generated files are provided for convenience in a [separate folder](../../py_grpc/tinode_grpc). You may re-generate them if needed:
 ```
+python -m pip install grpcio-tools
 python -m grpc_tools.protoc -../../pbx --python_out=. --grpc_python_out=. ../../pbx/model.proto
 ```
 
@@ -40,21 +41,9 @@ $ source venv/bin/activate
 $ python -m pip install --upgrade pip
 ```
 
-If you are using python 2.7 install `futures`:
+#### Install dependencies:
 ```
-$ python -m pip install futures
-```
-
-#### Install tinode_grpc
-
-Install tinode gRPC bindings:
-```
-$ python -m pip install tinode_grpc
-```
-
-Or, to install it system wide:
-```
-$ sudo python -m pip install tinode_grpc
+$ python -m pip install -r requirements.txt
 ```
 
 On El Capitan OSX, you may get the following error:
@@ -66,7 +55,7 @@ You can work around this using:
 $ python -m pip install tinode_grpc --ignore-installed
 ```
 
-#### Run the chatbot
+### Run the chatbot
 
 Start the [tinode server](../../INSTALL.md) first. Then start the chatbot with credentials of the user you want to be your bot, `alice` in this example:
 ```
@@ -78,11 +67,16 @@ nohup python chatbot.py --login-basic=alice:alice123 &
 ```
 Run `python chatbot.py -h` for more options.
 
-If you are using python 2.7, keep in mind that `condition.wait()` [is forever buggy](https://bugs.python.org/issue8844). As a consequence of this bug the bot cannot be terminated with a SIGINT. It has to be stopped with a SIGKILL.  
+If you are using python 2, keep in mind that `condition.wait()` [is forever buggy](https://bugs.python.org/issue8844). As a consequence of this bug the bot cannot be terminated with a SIGINT. It has to be stopped with a SIGKILL.
 
-You can use cookie file to store credentials. Sample cookie files are provided as `basic-cookie.sample` and `token-cookie.sample`. Once authenticated the bot will attempt to store the token in the cookie file, `.tn-cookie` by default. If you have a cookie file with the default name, you can run the bot with no parameters:
+You can use cookie file to store credentials. Sample cookie files are provided as `basic-cookie.sample` and `token-cookie.sample`. Once authenticated the bot will store the token in the cookie file, `.tn-cookie` by default. If you have a cookie file with the desired credentials, you can run the bot with no parameters:
 ```
 python chatbot.py
+```
+
+If the server is configured to use TLS, i.e. running as `httpS://my-server.example.com/`, the gRPC endpoint also uses the same SSL certificate. In that case add the `--ssl` option when starting the chatbot. If you want the chatbot to connect to the secure server over a local network or under a different name rather than the `my-server.example.com`, for instance as `localhost`, you must specify the SSL domain name to use, otherwise the server will not be able to find the right SSL certificate:
+```
+python chatbot.py --host=localhost:6001 --ssl --ssl-host=my-server.example.com
 ```
 
 Quotes are read from `quotes.txt` by default. The file is plain text with one quote per line.

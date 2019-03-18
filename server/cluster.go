@@ -82,6 +82,9 @@ type ClusterSess struct {
 	// Device ID
 	DeviceID string
 
+	// Device platform: "web", "ios", "android"
+	Platform string
+
 	// Session ID
 	Sid string
 }
@@ -215,21 +218,19 @@ func (n *ClusterNode) callAsync(proc string, msg, resp interface{}, done chan *r
 
 	myDone := make(chan *rpc.Call, 1)
 	go func() {
-		select {
-		case call := <-myDone:
-			if call.Error != nil {
-				n.lock.Lock()
-				if n.connected {
-					n.endpoint.Close()
-					n.connected = false
-					go n.reconnect()
-				}
-				n.lock.Unlock()
+		call := <-myDone
+		if call.Error != nil {
+			n.lock.Lock()
+			if n.connected {
+				n.endpoint.Close()
+				n.connected = false
+				go n.reconnect()
 			}
+			n.lock.Unlock()
+		}
 
-			if done != nil {
-				done <- call
-			}
+		if done != nil {
+			done <- call
 		}
 	}()
 
@@ -260,7 +261,7 @@ func (n *ClusterNode) respond(msg *ClusterResp) error {
 
 // Cluster is the representation of the cluster.
 type Cluster struct {
-	// Cluster nodes with RPC endpoints
+	// Cluster nodes with RPC endpoints (excluding current node).
 	nodes map[string]*ClusterNode
 	// Name of the local node
 	thisNodeName string
@@ -315,6 +316,7 @@ func (c *Cluster) Master(msg *ClusterReq, rejected *bool) error {
 		sess.remoteAddr = msg.Sess.RemoteAddr
 		sess.lang = msg.Sess.Lang
 		sess.deviceID = msg.Sess.DeviceID
+		sess.platf = msg.Sess.Platform
 
 		// Dispatch remote message to a local session.
 		msg.Pkt.from = msg.OnBahalfOf
@@ -362,12 +364,24 @@ func (c *Cluster) nodeForTopic(topic string) *ClusterNode {
 	return node
 }
 
+// isRemoteTopic checks if the given topic is handled by this node or a remote node.
 func (c *Cluster) isRemoteTopic(topic string) bool {
 	if c == nil {
 		// Cluster not initialized, all topics are local
 		return false
 	}
 	return c.ring.Get(topic) != c.thisNodeName
+}
+
+// isPartitioned checks if the cluster is partitioned due to network or other failure and if the
+// current node is a part of the smaller partition.
+func (c *Cluster) isPartitioned() bool {
+	if c == nil || c.fo == nil {
+		// Cluster not initialized or failover disabled therefore not partitioned.
+		return false
+	}
+
+	return (len(c.nodes)+1)/2 >= len(c.fo.activeNodes)
 }
 
 // Forward client message to the Master (cluster node which owns the topic)
@@ -400,6 +414,7 @@ func (c *Cluster) routeToTopic(msg *ClientComMessage, topic string, sess *Sessio
 				Ver:        sess.ver,
 				Lang:       sess.lang,
 				DeviceID:   sess.deviceID,
+				Platform:   sess.platf,
 				Sid:        sess.sid}})
 }
 
@@ -473,12 +488,10 @@ func clusterInit(configString json.RawMessage, self *string) int {
 			continue
 		}
 
-		n := ClusterNode{
+		globals.cluster.nodes[host.Name] = &ClusterNode{
 			address: host.Addr,
 			name:    host.Name,
 			done:    make(chan bool, 1)}
-
-		globals.cluster.nodes[host.Name] = &n
 	}
 
 	if len(globals.cluster.nodes) == 0 {
@@ -505,7 +518,6 @@ func (sess *Session) rpcWriteLoop() {
 		globals.sessionStore.Delete(sess)
 		sess.unsubAll()
 	}()
-	var unused bool
 
 	for {
 		select {
@@ -516,8 +528,7 @@ func (sess *Session) rpcWriteLoop() {
 			}
 			// The error is returned if the remote node is down. Which means the remote
 			// session is also disconnected.
-			if err := sess.clnode.call("Cluster.Proxy",
-				&ClusterResp{Msg: msg.([]byte), FromSID: sess.sid}, &unused); err != nil {
+			if err := sess.clnode.respond(&ClusterResp{Msg: msg.([]byte), FromSID: sess.sid}); err != nil {
 
 				log.Println("sess.writeRPC: " + err.Error())
 				return
@@ -525,8 +536,7 @@ func (sess *Session) rpcWriteLoop() {
 		case msg := <-sess.stop:
 			// Shutdown is requested, don't care if the message is delivered
 			if msg != nil {
-				sess.clnode.call("Cluster.Proxy", &ClusterResp{Msg: msg.([]byte), FromSID: sess.sid},
-					&unused)
+				sess.clnode.respond(&ClusterResp{Msg: msg.([]byte), FromSID: sess.sid})
 			}
 			return
 
@@ -607,9 +617,7 @@ func (c *Cluster) rehash(nodes []string) []string {
 		}
 		ringKeys = append(ringKeys, c.thisNodeName)
 	} else {
-		for _, name := range nodes {
-			ringKeys = append(ringKeys, name)
-		}
+		ringKeys = append(ringKeys, nodes...)
 	}
 	ring.Add(ringKeys...)
 

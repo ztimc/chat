@@ -9,12 +9,12 @@
 package main
 
 import (
-	"expvar"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/tinode/chat/server/auth"
 	"github.com/tinode/chat/server/store"
 	"github.com/tinode/chat/server/store/types"
 )
@@ -55,12 +55,16 @@ type sessionLeave struct {
 type topicUnreg struct {
 	// Routable name of the topic to drop
 	topic string
+	// UID of the user being deleted
+	forUser types.Uid
 	// Session making the request, could be nil
 	sess *Session
 	// Original request, could be nil
 	pkt *ClientComMessage
 	// Unregister then delete the topic
 	del bool
+	// Channel for reporting operation completion when deleting topics for a user
+	done chan<- bool
 }
 
 type metaReq struct {
@@ -100,9 +104,6 @@ type Hub struct {
 
 	// Flag for indicating that system shutdown is in progress
 	isShutdownInProgress bool
-
-	// Exported counter of live topics
-	topicsLive *expvar.Int
 }
 
 func (h *Hub) topicGet(name string) *Topic {
@@ -124,15 +125,16 @@ func newHub() *Hub {
 	var h = &Hub{
 		topics: &sync.Map{}, //make(map[string]*Topic),
 		// this needs to be buffered - hub generates invites and adds them to this queue
-		route:      make(chan *ServerComMessage, 4096),
-		join:       make(chan *sessionJoin),
-		unreg:      make(chan *topicUnreg),
-		rehash:     make(chan bool),
-		meta:       make(chan *metaReq, 128),
-		shutdown:   make(chan chan<- bool),
-		topicsLive: new(expvar.Int)}
+		route:    make(chan *ServerComMessage, 4096),
+		join:     make(chan *sessionJoin),
+		unreg:    make(chan *topicUnreg),
+		rehash:   make(chan bool),
+		meta:     make(chan *metaReq, 128),
+		shutdown: make(chan chan<- bool),
+	}
 
-	expvar.Publish("LiveTopics", h.topicsLive)
+	statsRegisterInt("LiveTopics")
+	statsRegisterInt("TotalTopics")
 
 	go h.run()
 
@@ -189,24 +191,35 @@ func (h *Hub) run() {
 			}
 
 		case meta := <-h.meta:
-			log.Println("hub.meta: got message")
-			// Request for topic info from a user who is not subscribed to the topic
+			// Metadata red or update from a user who is not attached to the topic.
 			if dst := h.topicGet(meta.topic); dst != nil {
-				// If topic is already in memory, pass request to topic
+				// If topic is already in memory, pass request to the topic.
 				dst.meta <- meta
-			} else if meta.pkt.Get != nil {
-				// If topic is not in memory, fetch requested description from DB and reply here
-				go replyTopicDescBasic(meta.sess, meta.topic, meta.pkt.Get)
+			} else {
+				// Topic is not in memory. Read or update the DB record and reply here.
+				if meta.pkt.Get != nil {
+					if meta.what == constMsgMetaDesc {
+						go replyOfflineTopicGetDesc(meta.sess, meta.topic, meta.pkt)
+					} else {
+						go replyOfflineTopicGetSub(meta.sess, meta.topic, meta.pkt)
+					}
+				} else if meta.pkt.Set != nil {
+					go replyOfflineTopicSetSub(meta.sess, meta.topic, meta.pkt)
+				}
 			}
 
 		case unreg := <-h.unreg:
-			// The topic is being garbage collected or deleted.
 			reason := StopNone
 			if unreg.del {
 				reason = StopDeleted
 			}
-			if err := h.topicUnreg(unreg.sess, unreg.topic, unreg.pkt, reason); err != nil {
-				log.Println("hub.topicUnreg failed:", err)
+			if unreg.forUser.IsZero() {
+				// The topic is being garbage collected or deleted.
+				if err := h.topicUnreg(unreg.sess, unreg.topic, unreg.pkt, reason); err != nil {
+					log.Println("hub.topicUnreg failed:", err)
+				}
+			} else {
+				go h.stopTopicsForUser(unreg.forUser, reason, unreg.done)
 			}
 
 		case <-h.rehash:
@@ -252,6 +265,7 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 	var t *Topic
 
 	timestamp := types.TimeNow()
+	pktsub := sreg.pkt.Sub
 
 	t = &Topic{name: sreg.topic,
 		xoriginal: sreg.pkt.topic,
@@ -280,7 +294,6 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 		t.cat = types.TopicCatMe
 
 		// 'me' has no owner, t.owner = nil
-
 		user, err := store.Users.Get(sreg.sess.uid)
 		if err != nil {
 			log.Println("hub: cannot load 'me' user object", t.name, err)
@@ -387,13 +400,13 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 		if stopic != nil {
 			// Subs already have Public swapped
 			if subs, err = store.Topics.GetUsers(t.name, nil); err != nil {
-				log.Println("hub: cannot load subscritions for '" + t.name + "' (" + err.Error() + ")")
+				log.Println("hub: cannot load subscriptions for '" + t.name + "' (" + err.Error() + ")")
 				sreg.sess.queueOut(ErrUnknown(sreg.pkt.id, t.xoriginal, timestamp))
 				return
 			}
 
 			// Case 3, fail
-			if subs == nil || len(subs) == 0 {
+			if len(subs) == 0 {
 				log.Println("hub: missing both subscriptions for '" + t.name + "' (SHOULD NEVER HAPPEN!)")
 				sreg.sess.queueOut(ErrUnknown(sreg.pkt.id, t.xoriginal, timestamp))
 				return
@@ -444,10 +457,10 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 
 			// Fetching records for both users.
 			// Requester.
-			userID1 := sreg.sess.uid
+			userID1 := types.ParseUserId(sreg.pkt.from)
 			// The other user.
 			userID2 := types.ParseUserId(t.xoriginal)
-			// User index: u1 - requester, u2 - the other user
+			// User index: u1 - requester, u2 - responder, the other user
 
 			var u1, u2 int
 			users, err := store.Users.GetAll(userID1, userID2)
@@ -456,7 +469,7 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 				sreg.sess.queueOut(ErrUnknown(sreg.pkt.id, t.xoriginal, timestamp))
 				return
 			}
-			if users == nil || len(users) != 2 {
+			if len(users) != 2 {
 				// Invited user does not exist
 				log.Println("hub: missing user for '" + t.name + "'")
 				sreg.sess.queueOut(ErrUserNotFound(sreg.pkt.id, t.xoriginal, timestamp))
@@ -484,39 +497,40 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 				}
 			}
 
-			// Other user's subscription is missing
+			// Other user's (responder's) subscription is missing
 			if sub2 == nil {
 				sub2 = &types.Subscription{
 					User:    userID2.String(),
 					Topic:   t.name,
 					Private: nil}
 
-				// Assign user2's ModeGiven based on what user1 has provided
-				if sreg.pkt.Set != nil && sreg.pkt.Set.Desc != nil && sreg.pkt.Set.Desc.DefaultAcs != nil {
+				// Assign user2's ModeGiven based on what user1 has provided.
+				// We don't know access mode for user2, assume it's Auth.
+				if pktsub.Set != nil && pktsub.Set.Desc != nil && pktsub.Set.Desc.DefaultAcs != nil {
 					// Use provided DefaultAcs as non-default modeGiven for the other user.
 					// The other user is assumed to have auth level "Auth".
-					sub2.ModeGiven = parseMode(sreg.pkt.Set.Desc.DefaultAcs.Auth, users[u1].Access.Auth) &
-						types.ModeCP2P
+					sub2.ModeGiven = parseMode(pktsub.Set.Desc.DefaultAcs.Auth, users[u1].Access.Auth)
+					// Sanity check
 				} else {
 					// Use user1.Auth as modeGiven for the other user
 					sub2.ModeGiven = users[u1].Access.Auth
 				}
+				sub2.ModeGiven = sub2.ModeGiven&types.ModeCP2P | types.ModeApprove
 
 				// Swap Public to match swapped Public in subs returned from store.Topics.GetSubs
 				sub2.SetPublic(users[u1].Public)
 
 				// Mark the entire topic as new.
 				sreg.created = true
-
-				log.Println("hub: created second subscription")
 			}
 
 			// Requester's subscription is missing:
 			// a. requester is starting a new topic
 			// b. requester's subscription is missing: deleted or creation failed
 			if sub1 == nil {
+
 				// Set user1's ModeGiven from user2's default values
-				userData.modeGiven = selectAccessMode(sreg.sess.authLvl,
+				userData.modeGiven = selectAccessMode(auth.Level(sreg.pkt.authLvl),
 					users[u2].Access.Anon,
 					users[u2].Access.Auth,
 					types.ModeCP2P)
@@ -524,20 +538,21 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 				// By default assign the same mode that user1 gave to user2 (could be changed below)
 				userData.modeWant = sub2.ModeGiven
 
-				if sreg.pkt.Set != nil {
-					if sreg.pkt.Set.Sub != nil {
-						uid := sreg.sess.uid
-						if sreg.pkt.Set.Sub.User != "" {
-							uid = types.ParseUserId(sreg.pkt.Set.Sub.User)
+				if pktsub.Set != nil {
+					if pktsub.Set.Sub != nil {
+						uid := userID1
+						if pktsub.Set.Sub.User != "" {
+							uid = types.ParseUserId(pktsub.Set.Sub.User)
 						}
 
-						if uid != sreg.sess.uid {
+						if uid != userID1 {
 							// Report the error and ignore the value
 							log.Println("hub: setting mode for another user is not supported '" + t.name + "'")
 						} else {
 							// user1 is setting non-default modeWant
-							userData.modeWant = parseMode(sreg.pkt.Set.Sub.Mode, userData.modeWant) &
-								types.ModeCP2P
+							userData.modeWant = parseMode(pktsub.Set.Sub.Mode, userData.modeWant)
+							// Ensure sanity
+							userData.modeWant = userData.modeWant&types.ModeCP2P | types.ModeApprove
 						}
 
 						// Since user1 issued a {sub} request, make sure the user can join
@@ -545,9 +560,9 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 					}
 
 					// user1 sets non-default Private
-					if sreg.pkt.Set.Desc != nil {
-						if !isNullValue(sreg.pkt.Set.Desc.Private) {
-							userData.private = sreg.pkt.Set.Desc.Private
+					if pktsub.Set.Desc != nil {
+						if !isNullValue(pktsub.Set.Desc.Private) {
+							userData.private = pktsub.Set.Desc.Private
 						}
 						// Public, if present, is ignored
 					}
@@ -564,16 +579,16 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 
 				// Mark this subscription as new
 				sreg.newsub = true
-
-				log.Println("hub: created first subscription")
 			}
 
 			if !user1only {
 				// sub2 is being created, assign sub2.modeWant to what user2 gave to user1 (sub1.modeGiven)
-				sub2.ModeWant = selectAccessMode(sreg.sess.authLvl,
+				sub2.ModeWant = selectAccessMode(auth.Level(sreg.pkt.authLvl),
 					users[u2].Access.Anon,
 					users[u2].Access.Auth,
 					types.ModeCP2P)
+				// Ensure sanity
+				sub2.ModeWant = sub2.ModeWant&types.ModeCP2P | types.ModeApprove
 			}
 
 			// Create everything
@@ -637,7 +652,7 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 		t.cat = types.TopicCatGrp
 
 		// Generic topics have parameters stored in the topic object
-		t.owner = sreg.sess.uid
+		t.owner = types.ParseUserId(sreg.pkt.from)
 
 		t.accessAuth = getDefaultAccess(t.cat, true)
 		t.accessAnon = getDefaultAccess(t.cat, false)
@@ -648,19 +663,19 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 			modeWant:  types.ModeCFull}
 
 		var tags []string
-		if sreg.pkt.Set != nil {
+		if pktsub.Set != nil {
 			// User sent initialization parameters
-			if sreg.pkt.Set.Desc != nil {
-				if !isNullValue(sreg.pkt.Set.Desc.Public) {
-					t.public = sreg.pkt.Set.Desc.Public
+			if pktsub.Set.Desc != nil {
+				if !isNullValue(pktsub.Set.Desc.Public) {
+					t.public = pktsub.Set.Desc.Public
 				}
-				if !isNullValue(sreg.pkt.Set.Desc.Private) {
-					userData.private = sreg.pkt.Set.Desc.Private
+				if !isNullValue(pktsub.Set.Desc.Private) {
+					userData.private = pktsub.Set.Desc.Private
 				}
 
 				// set default access
-				if sreg.pkt.Set.Desc.DefaultAcs != nil {
-					if authMode, anonMode, err := parseTopicAccess(sreg.pkt.Set.Desc.DefaultAcs,
+				if pktsub.Set.Desc.DefaultAcs != nil {
+					if authMode, anonMode, err := parseTopicAccess(pktsub.Set.Desc.DefaultAcs,
 						t.accessAuth, t.accessAnon); err != nil {
 
 						// Invalid access for one or both. Make it explicitly None
@@ -685,13 +700,13 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 			}
 
 			// Owner/creator may restrict own access to topic
-			if sreg.pkt.Set.Sub != nil && sreg.pkt.Set.Sub.Mode != "" {
-				userData.modeWant = parseMode(sreg.pkt.Set.Sub.Mode, types.ModeCFull)
+			if pktsub.Set.Sub != nil && pktsub.Set.Sub.Mode != "" {
+				userData.modeWant = parseMode(pktsub.Set.Sub.Mode, types.ModeCFull)
 				// User must not unset ModeJoin or the owner flags
 				userData.modeWant |= types.ModeJoin | types.ModeOwner
 			}
 
-			tags = normalizeTags(sreg.pkt.Set.Tags)
+			tags = normalizeTags(pktsub.Set.Tags)
 			if !restrictedTagsEqual(tags, nil, globals.immutableTagNS) {
 				log.Println("hub: attempt to directly set restricted tags")
 				sreg.sess.queueOut(ErrPermissionDenied(sreg.pkt.id, t.xoriginal, timestamp))
@@ -781,10 +796,11 @@ func topicInit(sreg *sessionJoin, h *Hub) {
 	}
 
 	h.topicPut(t.name, t)
-	h.topicsLive.Add(1)
-	go t.run(h)
 
-	log.Println("hub: started", t.name, "created=", sreg.created)
+	statsInc("LiveTopics", 1)
+	statsInc("TotalTopics", 1)
+
+	go t.run(h)
 
 	sreg.loaded = true
 	// Topic will check access rights, send invite to p2p user, send {ctrl} message to the initiator session
@@ -854,33 +870,27 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 	now := time.Now().UTC().Round(time.Millisecond)
 
 	if reason == StopDeleted {
+		asUid := types.ParseUserId(msg.from)
 		// Case 1 (unregister and delete)
 		if t := h.topicGet(topic); t != nil {
 			// Case 1.1: topic is online
-			if t.owner == sess.uid || (t.cat == types.TopicCatP2P && t.subsCount() < 2) {
+			if t.owner == asUid || (t.cat == types.TopicCatP2P && t.subsCount() < 2) {
 				// Case 1.1.1: requester is the owner or last sub in a p2p topic
 
 				t.suspend()
 
-				if err := store.Topics.Delete(topic); err != nil {
+				if err := store.Topics.Delete(topic, true); err != nil {
 					t.resume()
 					sess.queueOut(ErrUnknown(msg.id, msg.topic, now))
 					return err
 				}
 
-				t.meta <- &metaReq{
-					topic: topic,
-					pkt:   msg,
-					sess:  sess,
-					what:  constMsgDelTopic}
-
-				if sess != nil && msg != nil {
-					sess.queueOut(NoErr(msg.id, msg.topic, now))
-				}
+				sess.queueOut(NoErr(msg.id, msg.topic, now))
 
 				h.topicDel(topic)
 				t.exit <- &shutDown{reason: StopDeleted}
-				h.topicsLive.Add(-1)
+
+				statsInc("LiveTopics", -1)
 			} else {
 				// Case 1.1.2: requester is NOT the owner
 				t.meta <- &metaReq{
@@ -893,6 +903,7 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 		} else {
 			// Case 1.2: topic is offline.
 
+			asUid := types.ParseUserId(msg.from)
 			// Get all subscribers: we need to know how many are left and notify them.
 			subs, err := store.Topics.GetSubs(topic, nil)
 			if err != nil {
@@ -906,7 +917,7 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 			}
 
 			var sub *types.Subscription
-			user := sess.uid.String()
+			user := asUid.String()
 			for i := 0; i < len(subs); i++ {
 				if subs[i].User == user {
 					sub = &subs[i]
@@ -926,12 +937,12 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 
 				if tcat == types.TopicCatP2P && len(subs) < 2 {
 					// This is a P2P topic and fewer than 2 subscriptions, delete the entire topic
-					if err := store.Topics.Delete(topic); err != nil {
+					if err := store.Topics.Delete(topic, true); err != nil {
 						sess.queueOut(ErrUnknown(msg.id, msg.topic, now))
 						return err
 					}
 
-				} else if err := store.Subs.Delete(topic, sess.uid); err != nil {
+				} else if err := store.Subs.Delete(topic, asUid); err != nil {
 					// Not P2P or more than 1 subscription left.
 					// Delete user's own subscription only
 
@@ -940,12 +951,12 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 				}
 
 				// Notify user's other sessions that the subscription is gone
-				presSingleUserOfflineOffline(sess.uid, msg.topic, "gone", nilPresParams, sess.sid)
+				presSingleUserOfflineOffline(asUid, msg.topic, "gone", nilPresParams, sess.sid)
 				if tcat == types.TopicCatP2P && len(subs) == 2 {
-					uname1 := sess.uid.UserId()
+					uname1 := asUid.UserId()
 					uid2 := types.ParseUserId(msg.topic)
-					// Tell user1 to stop sending updates to user2 without changing user2 online status.
-					presSingleUserOfflineOffline(sess.uid, uid2.UserId(), "?none+rem", nilPresParams, "")
+					// Tell user1 to stop sending updates to user2 without passing change to user1's sessions.
+					presSingleUserOfflineOffline(asUid, uid2.UserId(), "?none+rem", nilPresParams, "")
 					// Don't change the online status of user1, just ask user2 to stop notification exchange.
 					// Tell user2 that user1 is offline but let him keep sending updates in case user1 resubscribes.
 					presSingleUserOfflineOffline(uid2, uname1, "off", nilPresParams, "")
@@ -954,7 +965,7 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 			} else {
 				// Case 1.2.1.1: owner, delete the group topic from db.
 				// Only group topics have owners.
-				if err := store.Topics.Delete(topic); err != nil {
+				if err := store.Topics.Delete(topic, true); err != nil {
 					sess.queueOut(ErrUnknown(msg.id, msg.topic, now))
 					return err
 				}
@@ -963,9 +974,7 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 				presSubsOfflineOffline(msg.topic, tcat, subs, "gone", &presParams{}, sess.sid)
 			}
 
-			if sess != nil && msg != nil {
-				sess.queueOut(NoErr(msg.id, msg.topic, now))
-			}
+			sess.queueOut(NoErr(msg.id, msg.topic, now))
 		}
 
 	} else {
@@ -975,7 +984,8 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 			t.suspend()
 			h.topicDel(topic)
 			t.exit <- &shutDown{reason: reason}
-			h.topicsLive.Add(-1)
+
+			statsInc("LiveTopics", -1)
 		}
 
 		// sess && msg could be nil if the topic is being killed by timer
@@ -987,54 +997,106 @@ func (h *Hub) topicUnreg(sess *Session, topic string, msg *ClientComMessage, rea
 	return nil
 }
 
-// replyTopicDescBasic loads minimal topic Desc when the requester is not subscribed to the topic
-func replyTopicDescBasic(sess *Session, topic string, get *MsgClientGet) {
-	log.Printf("hub.replyTopicDescBasic: topic %s", topic)
-	now := time.Now().UTC().Round(time.Millisecond)
+// Terminate all topics associated with the given user:
+// * all p2p topics with the given user
+// * group topics where the given user is the owner.
+// * user's 'me' and 'fnd' topics.
+func (h *Hub) stopTopicsForUser(uid types.Uid, reason int, alldone chan<- bool) {
+	var done chan bool
+	if alldone != nil {
+		done = make(chan bool, 128)
+	}
+
+	count := 0
+	h.topics.Range(func(name interface{}, t interface{}) bool {
+		topic := t.(*Topic)
+		if _, isMember := topic.perUser[uid]; (topic.cat != types.TopicCatGrp && isMember) ||
+			topic.owner == uid {
+
+			topic.suspend()
+
+			h.topics.Delete(name)
+
+			// This call is non-blocking unless some other routine tries to stop it at the same time.
+			topic.exit <- &shutDown{reason: reason, done: done}
+
+			// Just send to p2p topics here.
+			if topic.cat == types.TopicCatP2P && len(topic.perUser) == 2 {
+				presSingleUserOfflineOffline(topic.p2pOtherUser(uid), uid.UserId(), "gone", nilPresParams, "")
+			}
+			count++
+		}
+		return true
+	})
+
+	statsInc("LiveTopics", -count)
+
+	if alldone != nil {
+		for i := 0; i < count; i++ {
+			<-done
+		}
+		alldone <- true
+	}
+}
+
+// replyOfflineTopicGetDesc reads a minimal topic Desc from the database.
+// The requester may or maynot be subscribed to the topic.
+func replyOfflineTopicGetDesc(sess *Session, topic string, msg *ClientComMessage) {
+	now := types.TimeNow()
 	desc := &MsgTopicDesc{}
+	asUid := types.ParseUserId(msg.from)
 
 	if strings.HasPrefix(topic, "grp") {
 		stopic, err := store.Topics.Get(topic)
 		if err != nil {
-			sess.queueOut(ErrUnknown(get.Id, get.Topic, now))
+			log.Println("replyOfflineTopicGetDesc", err)
+			sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
 			return
 		}
 		if stopic == nil {
-			sess.queueOut(ErrTopicNotFound(get.Id, get.Topic, now))
+			sess.queueOut(ErrTopicNotFound(msg.id, msg.topic, now))
 			return
 		}
+
 		desc.CreatedAt = &stopic.CreatedAt
 		desc.UpdatedAt = &stopic.UpdatedAt
 		desc.Public = stopic.Public
+		if stopic.Owner == msg.from {
+			desc.DefaultAcs = &MsgDefaultAcsMode{
+				Auth: stopic.Access.Auth.String(),
+				Anon: stopic.Access.Anon.String()}
+		}
 
 	} else {
 		// 'me' and p2p topics
-		var uid types.Uid
+		uid := types.ZeroUid
 		if strings.HasPrefix(topic, "usr") {
 			// User specified as usrXXX
 			uid = types.ParseUserId(topic)
+			topic = asUid.P2PName(uid)
 		} else if strings.HasPrefix(topic, "p2p") {
 			// User specified as p2pXXXYYY
 			uid1, uid2, _ := types.ParseP2P(topic)
-			if uid1 == sess.uid {
+			if uid1 == asUid {
 				uid = uid2
-			} else if uid2 == sess.uid {
+			} else if uid2 == asUid {
 				uid = uid1
 			}
 		}
 
 		if uid.IsZero() {
-			sess.queueOut(ErrMalformed(get.Id, get.Topic, now))
+			log.Println("replyOfflineTopicGetDesc: malformed p2p topic name")
+			sess.queueOut(ErrMalformed(msg.id, msg.topic, now))
 			return
 		}
 
 		suser, err := store.Users.Get(uid)
 		if err != nil {
-			sess.queueOut(ErrUnknown(get.Id, get.Topic, now))
+			sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
 			return
 		}
 		if suser == nil {
-			sess.queueOut(ErrUserNotFound(get.Id, get.Topic, now))
+			sess.queueOut(ErrUserNotFound(msg.id, msg.topic, now))
 			return
 		}
 		desc.CreatedAt = &suser.CreatedAt
@@ -1042,6 +1104,144 @@ func replyTopicDescBasic(sess *Session, topic string, get *MsgClientGet) {
 		desc.Public = suser.Public
 	}
 
+	sub, err := store.Subs.Get(topic, asUid)
+	if err != nil {
+		log.Println("replyOfflineTopicGetDesc:", err)
+		sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
+		return
+	}
+
+	if sub != nil && sub.DeletedAt == nil {
+		desc.Private = sub.Private
+		desc.Acs = &MsgAccessMode{
+			Want:  sub.ModeWant.String(),
+			Given: sub.ModeGiven.String(),
+			Mode:  (sub.ModeGiven & sub.ModeWant).String()}
+	}
+
 	sess.queueOut(&ServerComMessage{
-		Meta: &MsgServerMeta{Id: get.Id, Topic: get.Topic, Timestamp: &now, Desc: desc}})
+		Meta: &MsgServerMeta{Id: msg.id, Topic: msg.topic, Timestamp: &now, Desc: desc}})
+}
+
+// replyOfflineTopicGetSub reads user's subscription from the database.
+// Only own subscription is available.
+// The requester must be subscribed but need not be attached.
+func replyOfflineTopicGetSub(sess *Session, topic string, msg *ClientComMessage) {
+	now := types.TimeNow()
+
+	if msg.Get.Sub.User != msg.from {
+		sess.queueOut(ErrPermissionDenied(msg.id, msg.topic, now))
+		return
+	}
+
+	ssub, err := store.Subs.Get(topic, types.ParseUserId(msg.from))
+	if err != nil {
+		log.Println("replyOfflineTopicGetSub:", err)
+		sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
+		return
+	}
+
+	if ssub == nil {
+		sess.queueOut(ErrNotFound(msg.id, msg.topic, now))
+		return
+	}
+
+	sub := MsgTopicSub{DeletedAt: ssub.DeletedAt}
+
+	if ssub.DeletedAt == nil {
+		sub.UpdatedAt = &ssub.UpdatedAt
+		sub.Acs = MsgAccessMode{
+			Want:  ssub.ModeWant.String(),
+			Given: ssub.ModeGiven.String(),
+			Mode:  (ssub.ModeGiven & ssub.ModeWant).String()}
+		sub.Private = ssub.Private
+		sub.User = ssub.User
+
+		if (ssub.ModeGiven & ssub.ModeWant).IsReader() && (ssub.ModeWant & ssub.ModeGiven).IsJoiner() {
+			sub.DelId = ssub.DelId
+			sub.ReadSeqId = ssub.ReadSeqId
+			sub.RecvSeqId = ssub.RecvSeqId
+		}
+	}
+
+	sess.queueOut(&ServerComMessage{
+		Meta: &MsgServerMeta{Id: msg.id, Topic: msg.topic, Timestamp: &now, Sub: []MsgTopicSub{sub}}})
+}
+
+// replyOfflineTopicSetSub updates Desc.Private and Sub.Mode when the topic is not loaded in memory.
+// Only Private and Mode are updated and only for the requester. The requester must be subscribed to the
+// topic but does not need to be attached.
+func replyOfflineTopicSetSub(sess *Session, topic string, msg *ClientComMessage) {
+	now := types.TimeNow()
+
+	if (msg.Set.Desc == nil || msg.Set.Desc.Private == nil) && (msg.Set.Sub == nil || msg.Set.Sub.Mode == "") {
+		sess.queueOut(InfoNotModified(msg.id, msg.topic, now))
+		return
+	}
+
+	if msg.Set.Sub != nil && msg.Set.Sub.User != "" && msg.Set.Sub.User != msg.from {
+		sess.queueOut(ErrPermissionDenied(msg.id, msg.topic, now))
+		return
+	}
+
+	asUid := types.ParseUserId(msg.from)
+
+	sub, err := store.Subs.Get(topic, asUid)
+	if err != nil {
+		log.Println("replyOfflineTopicSetSub get sub:", err)
+		sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
+		return
+	}
+
+	if sub == nil || sub.DeletedAt != nil {
+		sess.queueOut(ErrNotFound(msg.id, msg.topic, now))
+		return
+	}
+
+	update := make(map[string]interface{})
+	if msg.Set.Desc != nil && msg.Set.Desc.Private != nil {
+		private, ok := msg.Set.Desc.Private.(map[string]interface{})
+		if !ok {
+			update = map[string]interface{}{"Private": msg.Set.Desc.Private}
+		} else if private, changed := mergeInterfaces(sub.Private, private); changed {
+			update = map[string]interface{}{"Private": private}
+		}
+	}
+
+	if msg.Set.Sub != nil && msg.Set.Sub.Mode != "" {
+		var modeWant types.AccessMode
+		if err = modeWant.UnmarshalText([]byte(msg.Set.Sub.Mode)); err != nil {
+			log.Println("replyOfflineTopicSetSub mode:", err)
+			sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
+			return
+		}
+
+		if modeWant.IsOwner() != sub.ModeWant.IsOwner() {
+			// No ownership changes here.
+			sess.queueOut(ErrPermissionDenied(msg.id, msg.topic, now))
+			return
+		}
+
+		if types.GetTopicCat(topic) == types.TopicCatP2P {
+			// For P2P topics ignore requests exceeding types.ModeCP2P and do not allow
+			// removal of 'A' permission.
+			modeWant = modeWant&types.ModeCP2P | types.ModeApprove
+		}
+
+		if modeWant != sub.ModeWant {
+			update["ModeWant"] = modeWant
+		}
+	}
+
+	if len(update) > 0 {
+		err = store.Subs.Update(topic, asUid, update, true)
+		if err != nil {
+			log.Println("replyOfflineTopicSetSub update:", err)
+			sess.queueOut(decodeStoreError(err, msg.id, msg.topic, now, nil))
+		} else {
+			sess.queueOut(NoErr(msg.id, msg.topic, now))
+		}
+	} else {
+		sess.queueOut(InfoNotModified(msg.id, msg.topic, now))
+	}
 }
