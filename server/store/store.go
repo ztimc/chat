@@ -589,6 +589,8 @@ func (MessagesObjMapper) GetDeleted(topic string, forUser types.Uid, opt *types.
 	return ranges, maxID, nil
 }
 
+
+
 // Registered authentication handlers.
 var authHandlers map[string]auth.AuthHandler
 

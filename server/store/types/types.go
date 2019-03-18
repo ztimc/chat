@@ -914,6 +914,10 @@ type Message struct {
 	Content interface{}
 }
 
+type ContactMessage struct {
+
+}
+
 // Range is a range of message SeqIDs. Low end is inclusive (closed), high end is exclusive (open): [Low, Hi).
 // If the range contains just one ID, Hi is set to 0
 type Range struct {

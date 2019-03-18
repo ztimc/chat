@@ -273,18 +273,30 @@ type MsgClientNote struct {
 	SeqId int `json:"seq,omitempty"`
 }
 
+type MsgClientContactMessage struct {
+	// the topic is Sender's meTopic
+	Topic string `json:"topic"`
+	// send message user ID
+	Sender string `json:"sender"`
+	// Receiver message user ID
+	Receiver string `json:"receiver"`
+	// Contact message what 'add' , 'reject', 'agree'
+	What string `json:"what"`
+}
+
 // ClientComMessage is a wrapper for client messages.
 type ClientComMessage struct {
-	Hi    *MsgClientHi    `json:"hi"`
-	Acc   *MsgClientAcc   `json:"acc"`
-	Login *MsgClientLogin `json:"login"`
-	Sub   *MsgClientSub   `json:"sub"`
-	Leave *MsgClientLeave `json:"leave"`
-	Pub   *MsgClientPub   `json:"pub"`
-	Get   *MsgClientGet   `json:"get"`
-	Set   *MsgClientSet   `json:"set"`
-	Del   *MsgClientDel   `json:"del"`
-	Note  *MsgClientNote  `json:"note"`
+	Hi      *MsgClientHi             `json:"hi"`
+	Acc     *MsgClientAcc            `json:"acc"`
+	Login   *MsgClientLogin          `json:"login"`
+	Sub     *MsgClientSub            `json:"sub"`
+	Leave   *MsgClientLeave          `json:"leave"`
+	Pub     *MsgClientPub            `json:"pub"`
+	Get     *MsgClientGet            `json:"get"`
+	Set     *MsgClientSet            `json:"set"`
+	Del     *MsgClientDel            `json:"del"`
+	Note    *MsgClientNote           `json:"note"`
+	Contact *MsgClientContactMessage `json:"contact"`
 
 	// Message ID denormalized
 	id string
@@ -483,13 +495,22 @@ type MsgServerInfo struct {
 	SeqId int `json:"seq,omitempty"`
 }
 
+type MsgServerContact struct {
+	What string `json:"what"`
+	// Add contact user id
+	Sender string `json:"sendUser"`
+	// Receive user id
+	Receiver string `json:"receiveUser"`
+}
+
 // ServerComMessage is a wrapper for server-side messages.
 type ServerComMessage struct {
-	Ctrl *MsgServerCtrl `json:"ctrl,omitempty"`
-	Data *MsgServerData `json:"data,omitempty"`
-	Meta *MsgServerMeta `json:"meta,omitempty"`
-	Pres *MsgServerPres `json:"pres,omitempty"`
-	Info *MsgServerInfo `json:"info,omitempty"`
+	Ctrl    *MsgServerCtrl    `json:"ctrl,omitempty"`
+	Data    *MsgServerData    `json:"data,omitempty"`
+	Meta    *MsgServerMeta    `json:"meta,omitempty"`
+	Pres    *MsgServerPres    `json:"pres,omitempty"`
+	Info    *MsgServerInfo    `json:"info,omitempty"`
+	Contact *MsgServerContact `json:"contact,omitempty"`
 
 	// MsgServerData has no Id field, copying it here for use in {ctrl} aknowledgements
 	id string

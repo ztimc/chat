@@ -344,6 +344,10 @@ func (s *Session) dispatch(msg *ClientComMessage) {
 		msg.topic = msg.Note.Topic
 		uaRefresh = true
 
+	case msg.Contact != nil:
+		handler = s.contact
+		msg.topic = msg.Contact.Topic
+		uaRefresh = true
 	default:
 		// Unknown message
 		s.queueOut(ErrMalformed("", "", msg.timestamp))
@@ -979,6 +983,33 @@ func (s *Session) note(msg *ClientComMessage) {
 			What:  msg.Note.What,
 			SeqId: msg.Note.SeqId,
 		}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
+	} else if globals.cluster.isRemoteTopic(expanded) {
+		// The topic is handled by a remote node. Forward message to it.
+		globals.cluster.routeToTopic(msg, expanded, s)
+	}
+}
+
+func (s *Session) contact(msg *ClientComMessage) {
+	if s.ver == 0 || msg.from == "" {
+		// Silently ignore the message: have not received {hi} or don't know who sent the message.
+		return
+	}
+
+	// Expand topic name and validate request.
+	expanded, resp := s.expandTopicName(msg)
+	if resp != nil {
+		// Silently ignoring the message
+		return
+	}
+
+	if sub := s.getSub(expanded); sub != nil {
+		// Pings can be sent to subscribed topics only
+		sub.broadcast <- &ServerComMessage{Contact: &MsgServerContact{
+			What:     msg.Contact.What,
+			Sender:   msg.Contact.Sender,
+			Receiver: msg.Contact.Receiver,
+		}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
+
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
 		globals.cluster.routeToTopic(msg, expanded, s)

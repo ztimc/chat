@@ -403,11 +403,18 @@ func (t *Topic) run(hub *Hub) {
 
 					t.perUser[uid] = pud
 				}
+			} else if msg.Contact != nil {
+				switch msg.Contact.What {
+				case "add":
+				// add message to db
+				case "reject":
+				case "agree":
+				}
 			}
 
 			// Broadcast the message. Only {data}, {pres}, {info} are broadcastable.
 			// {meta} and {ctrl} are sent to the session only
-			if msg.Data != nil || msg.Pres != nil || msg.Info != nil {
+			if msg.Data != nil || msg.Pres != nil || msg.Info != nil || msg.Contact != nil {
 				for sess := range t.sessions {
 					if sess.sid == msg.skipSid {
 						continue
@@ -2156,7 +2163,7 @@ func (t *Topic) evictUser(uid types.Uid, unsub bool, skip string) {
 // 2. Deleted subscription
 // 3. Permissions changed
 func (t *Topic) notifySubChange(uid, actor types.Uid, oldWant, oldGiven,
-	newWant, newGiven types.AccessMode, skip string) {
+newWant, newGiven types.AccessMode, skip string) {
 
 	unsub := newWant == types.ModeUnset || newGiven == types.ModeUnset
 

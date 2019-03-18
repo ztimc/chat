@@ -138,6 +138,17 @@ type Adapter interface {
 	// MessageAttachments connects given message to a list of file record IDs.
 	MessageAttachments(msgId t.Uid, fids []string) error
 
+	//ContactMessage
+
+	// ContactMessage save to database
+	ContactMessageSave(msg *t.ContactMessage) error
+	// ContactMessage  return matching the query
+	ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.ContactMessage, error)
+	// ContactMessage update state
+	ContactMessageUpdate(msg *t.ContactMessage) error
+	// ContactMessage delete
+	ContactMessageDelete() error
+
 	// Devices (for push notifications)
 
 	// DeviceUpsert creates or updates a device record
