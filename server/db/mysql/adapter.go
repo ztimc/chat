@@ -328,6 +328,35 @@ func (a *adapter) CreateDb(reset bool) error {
 		return err
 	}
 
+	if _, err = tx.Exec(
+		`CREATE TABLE contactmsg (
+          id int(11) NOT NULL AUTO_INCREMENT,
+          createdat datetime(3) NOT NULL,
+          updatedat datetime(3) NOT NULL,
+          deletedat datetime(3) DEFAULT NULL,
+          user bigint(20) NOT NULL,
+          contact bigint(20) NOT NULL,
+          state int(11) DEFAULT '0',
+          PRIMARY KEY (id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `); err != nil {
+		return err
+	}
+
+	if _, err = tx.Exec(
+		`CREATE TABLE contact (
+          id int(11) NOT NULL AUTO_INCREMENT,
+          createdat datetime(3) NOT NULL,
+          updatedat datetime(3) NOT NULL,
+          deletedat datetime(3) DEFAULT NULL,
+          user bigint(20) NOT NULL,
+          contact bigint(20) NOT NULL,
+          PRIMARY KEY (id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `); err != nil {
+		return err
+	}
+
 	// Deletion log
 	if _, err = tx.Exec(
 		`CREATE TABLE dellog(
@@ -1961,6 +1990,168 @@ func (a *adapter) MessageAttachments(msgId t.Uid, fids []string) error {
 	}
 
 	return tx.Commit()
+}
+
+func (a *adapter) ContactMessageSave(msg *t.ContactMessage) (uid t.Uid, error) {
+	result := a.db.MustExec("INSERT INTO contactmsg(createdAt,updatedAt,user,contact,state)"+
+		" VALUES(?,?,?,?,?)",
+		msg.CreatedAt, msg.UpdatedAt,
+		store.DecodeUid(t.ParseUid(msg.User)),
+		store.DecodeUid(t.ParseUid(msg.Target)),
+		msg.State)
+	id, err := result.LastInsertId()
+
+	return t.Uid(id), err
+}
+
+func (a *adapter) ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.ContactMessage, error) {
+	query := "select cm.id,cm.createdat,cm.user,cm.contact,cm.state,u.public " +
+		"from contactmsg as cm left join users as u on cm.contact=u.id where cm.user=?" +
+		" and cm.deletedAt IS NULL and cm.id BETWEEN ? and ? limit ?"
+
+	var limit = maxResults
+	var lower = 0
+	var upper = 1 << 31
+
+	if opts != nil {
+		if opts.Since > 0 {
+			lower = opts.Since
+		}
+		if opts.Before > 0 {
+			// MySQL BETWEEN is inclusive-inclusive, Tinode API requires inclusive-exclusive, thus -1
+			upper = opts.Before - 1
+		}
+		if opts.Limit > 0 && opts.Limit < limit {
+			limit = opts.Limit
+		}
+	}
+
+	args := []interface{}{store.DecodeUid(uid), lower, upper, limit}
+	rows, err := a.db.Queryx(query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []t.ContactMessage
+	for rows.Next() {
+		var contentMsg t.ContactMessage
+		if err = rows.StructScan(&contentMsg); err != nil {
+			break
+		}
+		contentMsg.Public = fromJSON(contentMsg.Public)
+		contentMsg.User = encodeUidString(contentMsg.User).UserId()
+		contentMsg.Target = encodeUidString(contentMsg.Target).UserId()
+		result = append(result, contentMsg)
+	}
+	rows.Close()
+
+	return result, err
+}
+
+func (a *adapter) ContactMessageUpdate(user t.Uid, contact t.Uid, state t.ContactMessageState) error {
+	_, err := a.db.Exec("UPDATE contactmsg SET state=? where user=? and contact=?",
+		state,
+		store.DecodeUid(user),
+		store.DecodeUid(contact),
+	)
+	return err
+}
+
+func (a *adapter) ContactMessageDelete(id string) error {
+	_, err := a.db.Exec("DELETE FROM contactmsg WHERE id=?",
+		id)
+	return err
+}
+
+func (a *adapter) ContactMessageIsAdded(user t.Uid, contact t.Uid) (bool, error) {
+	var id int
+	err := a.db.Get(&id, "SELECT id FROM contactmsg WHERE user=? AND contact=?",
+		store.DecodeUid(user), store.DecodeUid(contact))
+	if err == sql.ErrNoRows {
+		// Nothing found, clear the error, otherwise it will be reported as internal error.
+		err = nil
+	}
+
+	return id > 0, err
+}
+
+func (a *adapter) ContactSave(contact *t.Contact) error {
+	_, err := a.db.Exec("INSERT INTO contact(createdAt,updatedAt,user,contact)"+
+		" VALUES(?,?,?,?)",
+		contact.CreatedAt, contact.UpdatedAt,
+		store.DecodeUid(t.ParseUid(contact.User)),
+		store.DecodeUid(t.ParseUid(contact.Contact)),
+	)
+	return err
+}
+
+//ContactDelete delete message by id
+func (a *adapter) ContactDelete(user t.Uid, contact t.Uid) error {
+	now := t.TimeNow()
+	println(store.DecodeUid(user))
+	_, err := a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE user=? AND contact=?",
+		now, now, store.DecodeUid(user), store.DecodeUid(contact))
+	_, err = a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE user=? AND contact=?",
+		now, now, store.DecodeUid(contact), store.DecodeUid(user))
+	return err
+}
+
+//ContactForUser get contact by user
+func (a *adapter) ContactForUser(user t.Uid, opts *t.QueryOpt) ([]t.Contact, error) {
+
+	query := "select c.id,c.createdat,c.user,c.contact,u.public from contact" +
+		" as c left join users as u on c.contact=u.id where c.user=? " +
+		" and c.deletedAt IS NULL and c.id BETWEEN ? and ? ORDER BY c.id DESC limit ?"
+
+	var limit = maxResults
+	var lower = 0
+	var upper = 1 << 31
+
+	if opts != nil {
+		if opts.Since > 0 {
+			lower = opts.Since
+		}
+		if opts.Before > 0 {
+			// MySQL BETWEEN is inclusive-inclusive, Tinode API requires inclusive-exclusive, thus -1
+			upper = opts.Before - 1
+		}
+		if opts.Limit > 0 && opts.Limit < limit {
+			limit = opts.Limit
+		}
+	}
+
+	args := []interface{}{store.DecodeUid(user), lower, upper, limit}
+	rows, err := a.db.Queryx(query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []t.Contact
+	for rows.Next() {
+		var contact t.Contact
+		if err = rows.StructScan(&contact); err != nil {
+			break
+		}
+		contact.Public = fromJSON(contact.Public)
+		contact.User = encodeUidString(contact.User).UserId()
+		contact.Contact = encodeUidString(contact.Contact).UserId()
+		result = append(result, contact)
+	}
+	rows.Close()
+	return result, err
+}
+
+func (a *adapter) ContactIsAdd(user t.Uid, contact t.Uid) (bool, error) {
+
+	var id int
+	err := a.db.Get(&id, "SELECT id FROM contact WHERE user=? AND contact=?",
+		store.DecodeUid(user), store.DecodeUid(contact))
+	if err == sql.ErrNoRows {
+		// Nothing found, clear the error, otherwise it will be reported as internal error.
+		err = nil
+	}
+
+	return id > 0, err
 }
 
 func deviceHasher(deviceID string) string {

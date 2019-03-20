@@ -589,7 +589,87 @@ func (MessagesObjMapper) GetDeleted(topic string, forUser types.Uid, opt *types.
 	return ranges, maxID, nil
 }
 
+type ContactMessagesObjMapper struct{}
 
+// Messages is an instance of ContactMessagesObjMapper to map methods to.
+var ContMsg ContactMessagesObjMapper
+
+// Save two message, because query convenient
+func (ContactMessagesObjMapper) Save(user types.Uid, target types.Uid) (string, error) {
+	contactMsg := types.ContactMessage{
+		User:   user.String(),
+		Target: target.String(),
+		State:  int(types.Add),
+	}
+	contactMsg.InitTimes()
+	_, err := adp.ContactMessageSave(&contactMsg)
+	if err != nil {
+		return "", err
+	}
+
+	contactMsg.State = int(types.BeAddedUnread)
+	contactMsg.User = target.String()
+	contactMsg.Target = user.String()
+	var contactId types.Uid
+	contactId, err = adp.ContactMessageSave(&contactMsg)
+	if err != nil {
+		return "", err
+	}
+
+	return string(contactId), nil
+}
+
+func (ContactMessagesObjMapper) Delete(id string) error {
+	return adp.ContactMessageDelete(id)
+}
+
+func (ContactMessagesObjMapper) Update(user types.Uid, contact types.Uid, state types.ContactMessageState) error {
+	return adp.ContactMessageUpdate(user, contact, state)
+}
+
+func (ContactMessagesObjMapper) GetAll(user types.Uid, opts *types.QueryOpt) ([]types.ContactMessage, error) {
+	return adp.ContactMessageForUser(user, opts)
+}
+
+func (ContactMessagesObjMapper) IsAdded(user types.Uid, contact types.Uid) (bool, error) {
+	return adp.ContactIsAdd(user, contact)
+}
+
+type ContactObjMapper struct{}
+
+// Messages is an instance of ContactMessagesObjMapper to map methods to.
+var Contact ContactObjMapper
+
+func (ContactObjMapper) Add(user types.Uid, contact types.Uid) error {
+	c := types.Contact{
+		User:    user.String(),
+		Contact: contact.String(),
+	}
+
+	c.InitTimes()
+	err := adp.ContactSave(&c)
+	if err != nil {
+		return err
+	}
+
+	c.User = contact.String()
+	c.Contact = user.String()
+	err = adp.ContactSave(&c)
+
+	return err
+}
+
+func (ContactObjMapper) Delete(user types.Uid, contact types.Uid) error {
+	return adp.ContactDelete(user, contact)
+}
+
+func (ContactObjMapper) GetAll(user types.Uid, opts *types.QueryOpt) ([]types.Contact, error) {
+	return adp.ContactForUser(user, opts)
+}
+
+func (ContactObjMapper) IsAdded(user types.Uid, contact types.Uid) (bool, error) {
+	return adp.ContactIsAdd(user, contact)
+}
 
 // Registered authentication handlers.
 var authHandlers map[string]auth.AuthHandler

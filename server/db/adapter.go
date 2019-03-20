@@ -141,13 +141,26 @@ type Adapter interface {
 	//ContactMessage
 
 	// ContactMessage save to database
-	ContactMessageSave(msg *t.ContactMessage) error
+	ContactMessageSave(msg *t.ContactMessage) (t.Uid, error)
 	// ContactMessage  return matching the query
 	ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.ContactMessage, error)
 	// ContactMessage update state
-	ContactMessageUpdate(msg *t.ContactMessage) error
+	ContactMessageUpdate(user t.Uid, contact t.Uid, state t.ContactMessageState) error
 	// ContactMessage delete
-	ContactMessageDelete() error
+	ContactMessageDelete(id string) error
+	// ContactMessage return ContactMessage
+	ContactMessageIsAdded(user t.Uid, contact t.Uid) (bool, error)
+
+	//Contact
+
+	//ContactSave save to database
+	ContactSave(contact *t.Contact) error
+	//ContactDelete delete message by id
+	ContactDelete(user t.Uid, contact t.Uid) error
+	//ContactForUser get contact by user
+	ContactForUser(user t.Uid, opts *t.QueryOpt) ([]t.Contact, error)
+	//ContactIsAdd return is add contact
+	ContactIsAdd(user t.Uid, contact t.Uid) (bool, error)
 
 	// Devices (for push notifications)
 

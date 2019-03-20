@@ -395,7 +395,7 @@ const (
 	ModeApprove                        // user can approve new members or evict existing members (A:0x10, 16)
 	ModeShare                          // user can invite new members (S:0x20, 32)
 	ModeDelete                         // user can hard-delete messages (D:0x40, 64)
-	ModeOwner                          // user is the owner (O:0x80, 128) - full access
+	ModeOwner                          // user is the /owner (O:0x80, 128) - full access
 	ModeUnset                          // Non-zero value to indicate unknown or undefined mode (:0x100, 256),
 	// to make it different from ModeNone
 
@@ -777,6 +777,7 @@ func (s *Subscription) GetDefaultAccess() *DefaultAccess {
 }
 
 // Contact is a result of a search for connections
+/*
 type Contact struct {
 	Id       string
 	MatchOn  []string
@@ -784,6 +785,7 @@ type Contact struct {
 	LastSeen time.Time
 	Public   interface{}
 }
+*/
 
 type perUserData struct {
 	private interface{}
@@ -915,7 +917,23 @@ type Message struct {
 }
 
 type ContactMessage struct {
+	ObjHeader
+	//Message owner
+	User string
+	//Message target
+	Target string
+	//Message state
+	State int
+	//Target user's info
+	Public interface{}
+}
 
+type Contact struct {
+	ObjHeader
+	User    string
+	Contact string
+	// Contact's info
+	Public interface{}
 }
 
 // Range is a range of message SeqIDs. Low end is inclusive (closed), high end is exclusive (open): [Low, Hi).
@@ -1001,6 +1019,18 @@ type QueryOpt struct {
 	// Common parameter
 	Limit int
 }
+
+type ContactMessageState int
+
+const (
+	Add ContactMessageState = iota
+	BeAddedUnread
+	BeAdded
+	Reject
+	BeRejectedUnread
+	BeRejected
+	Agree
+)
 
 // TopicCat is an enum of topic categories.
 type TopicCat int

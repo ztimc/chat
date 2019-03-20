@@ -442,6 +442,7 @@ type MsgServerPres struct {
 	DelSeq    []MsgDelRange `json:"delseq,omitempty"`
 	AcsTarget string        `json:"tgt,omitempty"`
 	AcsActor  string        `json:"act,omitempty"`
+	ContactId string        `json:"ct,omitempty"`
 	// Acs or a delta Acs. Need to marshal it to json under a name different than 'acs'
 	// to allow different handling on the client
 	Acs *MsgAccessMode `json:"dacs,omitempty"`

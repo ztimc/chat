@@ -390,7 +390,7 @@ func (t *Topic) presSingleUserOffline(uid types.Uid, what string, params *presPa
 	}
 
 	if pud, ok := t.perUser[uid]; ok && !pud.deleted &&
-		// Send access change notification regardless of P permission.
+	// Send access change notification regardless of P permission.
 		(what == "acs" || what == "gone" || presOfflineFilter(pud.modeGiven&pud.modeWant, nil)) {
 
 		user := uid.UserId()
@@ -454,6 +454,15 @@ func (t *Topic) presPubMessageCount(uid types.Uid, recv, read int, skip string) 
 
 		t.presSingleUserOffline(uid, what, &presParams{seqID: seq}, skip, true)
 	}
+}
+
+func (t *Topic) presContactMessage(uid types.Uid, contact types.Uid, contactId string) {
+	globals.hub.route <- &ServerComMessage{
+		Pres: &MsgServerPres{Topic: "me",
+			What:      "contact",
+			Src:       t.original(uid),
+			ContactId: contactId},
+		rcptto: contact.UserId()}
 }
 
 // Let other sessions of a given user know that messages are now deleted

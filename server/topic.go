@@ -296,7 +296,7 @@ func (t *Topic) run(hub *Hub) {
 					Topic:     t.name,
 					From:      from.String(),
 					Head:      msg.Data.Head,
-					Content:   msg.Data.Content}, (userData.modeGiven & userData.modeWant).IsReader()); err != nil {
+					Content:   msg.Data.Content}, false); err != nil {
 
 					log.Printf("topic[%s]: failed to save message: %v", t.name, err)
 					msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
@@ -404,15 +404,66 @@ func (t *Topic) run(hub *Hub) {
 					t.perUser[uid] = pud
 				}
 			} else if msg.Contact != nil {
+
+				user := types.ParseUserId(msg.Contact.Sender)
+				contact := types.ParseUserId(msg.Contact.Receiver)
+
 				switch msg.Contact.What {
 				case "add":
-				// add message to db
+					//when someone add contact:
+					//	1. has been added
+					//		fail
+					//	2. Not added
+					//      save add contact message also notify contact
+
+					isAddedContactMsg, msgErr := store.ContMsg.IsAdded(user, contact)
+					isAddedContact, contactErr := store.Contact.IsAdded(user, contact)
+					if msgErr != nil || contactErr != nil {
+						msg.sess.queueOut(ErrMalformed(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					if isAddedContactMsg || isAddedContact {
+						msg.sess.queueOut(ErrAlreadyExists(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					contactId, err := store.ContMsg.Save(user, contact)
+					if err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					t.presContactMessage(user, contact, contactId)
+
 				case "reject":
+					if err := store.ContMsg.Update(user, contact, types.Reject); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					if err := store.ContMsg.Update(user, contact, types.BeRejectedUnread); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
 				case "agree":
+					if err := store.ContMsg.Update(user, contact, types.Agree); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					if err := store.ContMsg.Update(contact, user, types.Agree); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+
+					if err := store.Contact.Add(user, contact); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
+					if err := store.Contact.Add(contact, user); err != nil {
+						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+						continue
+					}
 				}
 			}
 
-			// Broadcast the message. Only {data}, {pres}, {info} are broadcastable.
+			// Broadcast the message. Only {data}, {pres}, {info} {contact} are broadcastable.
 			// {meta} and {ctrl} are sent to the session only
 			if msg.Data != nil || msg.Pres != nil || msg.Info != nil || msg.Contact != nil {
 				for sess := range t.sessions {
