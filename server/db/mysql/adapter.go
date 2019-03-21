@@ -1997,7 +1997,7 @@ func (a *adapter) ContactMessageSave(msg *t.ContactMessage) (t.Uid, error) {
 		" VALUES(?,?,?,?,?)",
 		msg.CreatedAt, msg.UpdatedAt,
 		store.DecodeUid(t.ParseUid(msg.User)),
-		store.DecodeUid(t.ParseUid(msg.Target)),
+		store.DecodeUid(t.ParseUid(msg.Contact)),
 		msg.State)
 	id, err := result.LastInsertId()
 
@@ -2040,7 +2040,7 @@ func (a *adapter) ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.Contac
 		}
 		contentMsg.Public = fromJSON(contentMsg.Public)
 		contentMsg.User = encodeUidString(contentMsg.User).UserId()
-		contentMsg.Target = encodeUidString(contentMsg.Target).UserId()
+		contentMsg.Contact = encodeUidString(contentMsg.Contact).UserId()
 		result = append(result, contentMsg)
 	}
 	rows.Close()

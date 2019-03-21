@@ -597,9 +597,9 @@ var ContMsg ContactMessagesObjMapper
 // Save two message, because query convenient
 func (ContactMessagesObjMapper) Save(user types.Uid, target types.Uid) (string, error) {
 	contactMsg := types.ContactMessage{
-		User:   user.String(),
-		Target: target.String(),
-		State:  int(types.Add),
+		User:    user.String(),
+		Contact: target.String(),
+		State:   int(types.Add),
 	}
 	contactMsg.InitTimes()
 	_, err := adp.ContactMessageSave(&contactMsg)
@@ -609,7 +609,7 @@ func (ContactMessagesObjMapper) Save(user types.Uid, target types.Uid) (string, 
 
 	contactMsg.State = int(types.BeAddedUnread)
 	contactMsg.User = target.String()
-	contactMsg.Target = user.String()
+	contactMsg.Contact = user.String()
 	var contactId types.Uid
 	contactId, err = adp.ContactMessageSave(&contactMsg)
 	if err != nil {

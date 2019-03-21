@@ -921,7 +921,7 @@ type ContactMessage struct {
 	//Message owner
 	User string
 	//Message target
-	Target string
+	Contact string
 	//Message state
 	State int
 	//Target user's info

@@ -435,7 +435,7 @@ type MsgContactMessage struct {
 	Id       string      `json:"id,omitempty"`
 	CreateAt *time.Time  `json:"created,omitempty"`
 	Sender   string      `json:"sender,omitempty"`
-	Receiver string      `json:'receiver,omitempty'"`
+	Receiver string      `json:"receiver,omitempty"`
 	State    int         `json:"state"`
 	Public   interface{} `json:"public,omitempty"`
 }

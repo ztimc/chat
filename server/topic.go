@@ -1531,7 +1531,7 @@ func (t *Topic) replyGetContactMessage(sess *Session, asUid types.Uid, id string
 			mts.CreateAt = &msg.CreatedAt
 			mts.Id = msg.Id
 			mts.Sender = msg.User
-			mts.Receiver = msg.Target
+			mts.Receiver = msg.Contact
 			mts.State = msg.State
 			mts.Public = msg.Public
 			meta.ContactMsg = append(meta.ContactMsg, mts)
