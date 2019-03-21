@@ -42,6 +42,10 @@ type MsgGetQuery struct {
 	Data *MsgGetOpts `json:"data,omitempty"`
 	// Parameters of "del" request: Since, Before, Limit.
 	Del *MsgGetOpts `json:"del,omitempty"`
+	// Parameters of "ctmsg" request: Since, Before, Limit.
+	ContactMsg *MsgGetOpts `json:"ctmsg,omitempty"`
+	// Parameters of "contact" request: Since, Before, Limit.
+	Contact *MsgGetOpts `json:"contact,omitempty"`
 }
 
 // MsgSetSub is a payload in set.sub request to update current subscription or invite another user, {sub.what} == "sub"
@@ -158,6 +162,8 @@ type MsgClientSub struct {
 
 const (
 	constMsgMetaDesc = 1 << iota
+	constMsgMetaContactMsg
+	constMsgMetaContact
 	constMsgMetaSub
 	constMsgMetaData
 	constMsgMetaTags
@@ -169,6 +175,8 @@ const (
 	constMsgDelMsg
 	constMsgDelSub
 	constMsgDelUser
+	constMsgDelContactMsg
+	constMsgDelContact
 )
 
 func parseMsgClientMeta(params string) int {
@@ -178,6 +186,10 @@ func parseMsgClientMeta(params string) int {
 		switch p {
 		case "desc":
 			bits |= constMsgMetaDesc
+		case "ctmsg":
+			bits |= constMsgMetaContactMsg
+		case "contact":
+			bits |= constMsgMetaContact
 		case "sub":
 			bits |= constMsgMetaSub
 		case "data":
@@ -199,6 +211,10 @@ func parseMsgClientDel(params string) int {
 		return constMsgDelMsg
 	case "topic":
 		return constMsgDelTopic
+	case "ctmsg":
+		return constMsgDelContactMsg
+	case "contact":
+		return constMsgDelContact
 	case "sub":
 		return constMsgDelSub
 	case "user":
@@ -257,6 +273,10 @@ type MsgClientDel struct {
 	What string `json:"what"`
 	// Delete messages with these IDs (either one by one or a set of ranges)
 	DelSeq []MsgDelRange `json:"delseq,omitempty"`
+	// Delete contact message by id
+	DelCtMsgId string `json:"delctmsgid,omitempty"`
+	// Delete Contact by id
+	DelCtId string `json:"delctid,omitempty"`
 	// User ID of the user or subscription to delete
 	User string `json:"user,omitempty"`
 	// Request to hard-delete objects (i.e. delete messages for all users), if such option is available.
@@ -280,6 +300,8 @@ type MsgClientContactMessage struct {
 	Sender string `json:"sender"`
 	// Receiver message user ID
 	Receiver string `json:"receiver"`
+	// Contact Id
+	ContactId string `json:"contactId"`
 	// Contact message what 'add' , 'reject', 'agree'
 	What string `json:"what"`
 }
@@ -408,6 +430,25 @@ type MsgDelValues struct {
 	DelSeq []MsgDelRange `json:"delseq,omitempty"`
 }
 
+// MsgContactMessage is contact message, sent in Meta message
+type MsgContactMessage struct {
+	Id       string      `json:"id,omitempty"`
+	CreateAt *time.Time  `json:"created,omitempty"`
+	Sender   string      `json:"sender,omitempty"`
+	Receiver string      `json:'receiver,omitempty'"`
+	State    int         `json:"state"`
+	Public   interface{} `json:"public,omitempty"`
+}
+
+// MsgContact is contact details, sent in Meta message
+type MsgContact struct {
+	Id       string      `json:"id,omitempty"`
+	CreateAt *time.Time  `json:"created,omitempty"`
+	User     string      `json:"user,omitempty"`
+	Contact  string      `json:'contact,omitempty'"`
+	Public   interface{} `json:"public,omitempty"`
+}
+
 // MsgServerCtrl is a server control message {ctrl}.
 type MsgServerCtrl struct {
 	Id     string      `json:"id,omitempty"`
@@ -483,6 +524,10 @@ type MsgServerMeta struct {
 	Del *MsgDelValues `json:"del,omitempty"`
 	// User discovery tags
 	Tags []string `json:"tags,omitempty"`
+	// Contact message
+	ContactMsg []MsgContactMessage `json:"ctmsg,omitempty"`
+	// Contact
+	Contact []MsgContact `json:"contact,omitempty"`
 }
 
 // MsgServerInfo is the server-side copy of MsgClientNote with From added (non-authoritative).
@@ -499,9 +544,11 @@ type MsgServerInfo struct {
 type MsgServerContact struct {
 	What string `json:"what"`
 	// Add contact user id
-	Sender string `json:"sendUser"`
+	Sender string `json:"sender"`
 	// Receive user id
-	Receiver string `json:"receiveUser"`
+	Receiver string `json:"receiver"`
+	// contactId
+	ContactId string `json:"contactId"`
 }
 
 // ServerComMessage is a wrapper for server-side messages.

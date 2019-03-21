@@ -1992,7 +1992,7 @@ func (a *adapter) MessageAttachments(msgId t.Uid, fids []string) error {
 	return tx.Commit()
 }
 
-func (a *adapter) ContactMessageSave(msg *t.ContactMessage) (uid t.Uid, error) {
+func (a *adapter) ContactMessageSave(msg *t.ContactMessage) (t.Uid, error) {
 	result := a.db.MustExec("INSERT INTO contactmsg(createdAt,updatedAt,user,contact,state)"+
 		" VALUES(?,?,?,?,?)",
 		msg.CreatedAt, msg.UpdatedAt,
@@ -2086,13 +2086,12 @@ func (a *adapter) ContactSave(contact *t.Contact) error {
 }
 
 //ContactDelete delete message by id
-func (a *adapter) ContactDelete(user t.Uid, contact t.Uid) error {
+func (a *adapter) ContactDelete(id string) error {
 	now := t.TimeNow()
-	println(store.DecodeUid(user))
-	_, err := a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE user=? AND contact=?",
-		now, now, store.DecodeUid(user), store.DecodeUid(contact))
-	_, err = a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE user=? AND contact=?",
-		now, now, store.DecodeUid(contact), store.DecodeUid(user))
+	_, err := a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE id=?",
+		now, now, id)
+	_, err = a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE id=?",
+		now, now, id)
 	return err
 }
 

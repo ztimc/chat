@@ -456,10 +456,10 @@ func (t *Topic) presPubMessageCount(uid types.Uid, recv, read int, skip string) 
 	}
 }
 
-func (t *Topic) presContactMessage(uid types.Uid, contact types.Uid, contactId string) {
+func (t *Topic) presContactMessage(what string, uid types.Uid, contact types.Uid, contactId string) {
 	globals.hub.route <- &ServerComMessage{
 		Pres: &MsgServerPres{Topic: "me",
-			What:      "contact",
+			What:      what,
 			Src:       t.original(uid),
 			ContactId: contactId},
 		rcptto: contact.UserId()}

@@ -1008,6 +1008,7 @@ func (s *Session) contact(msg *ClientComMessage) {
 			What:     msg.Contact.What,
 			Sender:   msg.Contact.Sender,
 			Receiver: msg.Contact.Receiver,
+			ContactId: msg.Contact.ContactId,
 		}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
 
 	} else if globals.cluster.isRemoteTopic(expanded) {

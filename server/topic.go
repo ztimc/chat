@@ -415,7 +415,6 @@ func (t *Topic) run(hub *Hub) {
 					//		fail
 					//	2. Not added
 					//      save add contact message also notify contact
-
 					isAddedContactMsg, msgErr := store.ContMsg.IsAdded(user, contact)
 					isAddedContact, contactErr := store.Contact.IsAdded(user, contact)
 					if msgErr != nil || contactErr != nil {
@@ -431,17 +430,18 @@ func (t *Topic) run(hub *Hub) {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					t.presContactMessage(user, contact, contactId)
+					t.presContactMessage("ctadd", user, contact, contactId)
 
 				case "reject":
 					if err := store.ContMsg.Update(user, contact, types.Reject); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					if err := store.ContMsg.Update(user, contact, types.BeRejectedUnread); err != nil {
+					if err := store.ContMsg.Update(contact, user, types.BeRejectedUnread); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
+					t.presContactMessage("ctreject", contact, user, msg.Contact.ContactId)
 				case "agree":
 					if err := store.ContMsg.Update(user, contact, types.Agree); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
@@ -460,6 +460,7 @@ func (t *Topic) run(hub *Hub) {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
+					t.presContactMessage("ctagree", contact, user, msg.Contact.ContactId)
 				}
 			}
 
@@ -556,6 +557,19 @@ func (t *Topic) run(hub *Hub) {
 						log.Printf("topic[%s] meta.Get.Desc failed: %s", t.name, err)
 					}
 				}
+
+				if meta.what&constMsgMetaContactMsg != 0 {
+					if err := t.replyGetContactMessage(meta.sess, asUid, meta.pkt.Get.Id, meta.pkt.Get.ContactMsg); err != nil {
+						log.Printf("topic[%s] meta.Get.ContactMessage failed: %s", t.name, err)
+					}
+				}
+
+				if meta.what&constMsgMetaContact != 0 {
+					if err := t.replyGetContact(meta.sess, asUid, meta.pkt.Get.Id, meta.pkt.Get.Contact); err != nil {
+						log.Printf("topic[%s] meta.Get.Contact failed: %s", t.name, err)
+					}
+				}
+
 				if meta.what&constMsgMetaSub != 0 {
 					if err := t.replyGetSub(meta.sess, asUid, authLevel, meta.pkt.Get.Id, meta.pkt.Get.Sub); err != nil {
 						log.Printf("topic[%s] meta.Get.Sub failed: %s", t.name, err)
@@ -608,6 +622,10 @@ func (t *Topic) run(hub *Hub) {
 					err = t.replyDelSub(hub, meta.sess, asUid, meta.pkt.Del)
 				case constMsgDelTopic:
 					err = t.replyDelTopic(hub, meta.sess, asUid, meta.pkt.Del)
+				case constMsgDelContactMsg:
+					err = t.replyDelContactMessage(hub, meta.sess, asUid, meta.pkt.Del)
+				case constMsgMetaContact:
+					err = t.replyDelContact(hub, meta.sess, asUid, meta.pkt.Del)
 				}
 
 				if err != nil {
@@ -764,6 +782,18 @@ func (t *Topic) handleSubscription(h *Hub, sreg *sessionJoin) error {
 	if getWhat&constMsgMetaDesc != 0 {
 		// Send get.desc as a {meta} packet.
 		if err := t.replyGetDesc(sreg.sess, asUid, sreg.pkt.id, msgsub.Get.Desc); err != nil {
+			log.Printf("topic[%s] subCommonReply Get.Desc failed: %v", t.name, err)
+		}
+	}
+
+	if getWhat&constMsgMetaContactMsg != 0 {
+		if err := t.replyGetContactMessage(sreg.sess, asUid, sreg.pkt.id, msgsub.Get.ContactMsg); err != nil {
+			log.Printf("topic[%s] subCommonReply Get.Desc failed: %v", t.name, err)
+		}
+	}
+
+	if getWhat&constMsgMetaContact != 0 {
+		if err := t.replyGetContact(sreg.sess, asUid, sreg.pkt.id, msgsub.Get.Contact); err != nil {
 			log.Printf("topic[%s] subCommonReply Get.Desc failed: %v", t.name, err)
 		}
 	}
@@ -1478,6 +1508,79 @@ func (t *Topic) replySetDesc(sess *Session, asUid types.Uid, set *MsgClientSet) 
 	return nil
 }
 
+func (t *Topic) replyGetContactMessage(sess *Session, asUid types.Uid, id string, req *MsgGetOpts) error {
+	now := types.TimeNow()
+	if req != nil && (req.SinceId != 0 || req.BeforeId != 0) {
+		sess.queueOut(ErrMalformed(id, t.original(asUid), now))
+		return errors.New("invalid MsgGetOpts query")
+	}
+
+	meta := &MsgServerMeta{Id: id, Topic: t.original(asUid), Timestamp: &now}
+
+	msgs, err := store.ContMsg.GetAll(asUid, msgOpts2storeOpts(req))
+
+	if err != nil {
+		sess.queueOut(decodeStoreError(err, id, t.original(asUid), now, nil))
+	}
+
+	if len(msgs) > 0 {
+		meta.ContactMsg = make([]MsgContactMessage, 0, len(msgs))
+		for i := range msgs {
+			var mts MsgContactMessage
+			msg := msgs[i]
+			mts.CreateAt = &msg.CreatedAt
+			mts.Id = msg.Id
+			mts.Sender = msg.User
+			mts.Receiver = msg.Target
+			mts.State = msg.State
+			mts.Public = msg.Public
+			meta.ContactMsg = append(meta.ContactMsg, mts)
+		}
+		sess.queueOut(&ServerComMessage{Meta: meta})
+	} else {
+		sess.queueOut(NoErr(id, t.original(asUid), now))
+	}
+
+	return nil
+}
+
+func (t *Topic) replyGetContact(sess *Session, asUid types.Uid, id string, req *MsgGetOpts) error {
+	now := types.TimeNow()
+
+	if req != nil && (req.SinceId != 0 || req.BeforeId != 0) {
+		sess.queueOut(ErrMalformed(id, t.original(asUid), now))
+		return errors.New("invalid MsgGetOpts query")
+	}
+
+	meta := &MsgServerMeta{Id: id, Topic: t.original(asUid), Timestamp: &now}
+
+	contacts, err := store.Contact.GetAll(asUid, msgOpts2storeOpts(req))
+
+	if err != nil {
+		sess.queueOut(decodeStoreError(err, id, t.original(asUid), now, nil))
+	}
+
+	if len(contacts) > 0 {
+		meta.Contact = make([]MsgContact, 0, len(contacts))
+
+		for i := range contacts {
+			var mf MsgContact
+			contact := contacts[i]
+			mf.Id = contact.Id
+			mf.CreateAt = &contact.CreatedAt
+			mf.User = contact.User
+			mf.Contact = contact.Contact
+			mf.Public = contact.Public
+			meta.Contact = append(meta.Contact, mf)
+		}
+		sess.queueOut(&ServerComMessage{Meta: meta})
+	} else {
+		sess.queueOut(NoErr(id, t.original(asUid), now))
+	}
+
+	return nil
+}
+
 // replyGetSub is a response to a get.sub request on a topic - load a list of subscriptions/subscribers,
 // send it just to the session as a {meta} packet
 func (t *Topic) replyGetSub(sess *Session, asUid types.Uid, authLevel auth.Level, id string, req *MsgGetOpts) error {
@@ -2079,6 +2182,18 @@ func (t *Topic) replyDelTopic(h *Hub, sess *Session, asUid types.Uid, del *MsgCl
 	// Notifications are sent from the topic loop.
 
 	return nil
+}
+
+func (t *Topic) replyDelContactMessage(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
+	if err := store.ContMsg.Delete(del.DelCtMsgId); err != nil {
+		return err
+	}
+	t.presContactMessage("ctdel", asUid, types.ParseUid(del.User), del.DelCtMsgId)
+	return nil
+}
+
+func (t *Topic) replyDelContact(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
+	return store.Contact.Delete(del.DelCtId)
 }
 
 func (t *Topic) replyDelSub(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
