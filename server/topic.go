@@ -2185,10 +2185,12 @@ func (t *Topic) replyDelTopic(h *Hub, sess *Session, asUid types.Uid, del *MsgCl
 }
 
 func (t *Topic) replyDelContactMessage(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
+	now := types.TimeNow()
 	if err := store.ContMsg.Delete(del.DelCtMsgId); err != nil {
 		return err
 	}
-	t.presContactMessage("ctdel", asUid, types.ParseUid(del.User), del.DelCtMsgId)
+	t.presContactMessage("ctmdel", asUid, types.ParseUid(del.User), del.DelCtMsgId)
+	sess.queueOut(NoErr(del.Id, t.original(asUid), now))
 	return nil
 }
 

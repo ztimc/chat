@@ -456,7 +456,7 @@ func (t *Topic) presPubMessageCount(uid types.Uid, recv, read int, skip string) 
 	}
 }
 
-func (t *Topic) presContactMessage(what string, uid types.Uid, contact types.Uid, contactId string) {
+func (t *Topic) presContactMessage(what string,uid types.Uid, contact types.Uid, contactId string) {
 	globals.hub.route <- &ServerComMessage{
 		Pres: &MsgServerPres{Topic: "me",
 			What:      what,
@@ -464,6 +464,8 @@ func (t *Topic) presContactMessage(what string, uid types.Uid, contact types.Uid
 			ContactId: contactId},
 		rcptto: contact.UserId()}
 }
+
+
 
 // Let other sessions of a given user know that messages are now deleted
 // Cases V.1, V.2

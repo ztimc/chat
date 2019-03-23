@@ -200,7 +200,7 @@ func (h *Hub) run() {
 				if meta.pkt.Get != nil {
 					if meta.what == constMsgMetaDesc {
 						go replyOfflineTopicGetDesc(meta.sess, meta.topic, meta.pkt)
-					} else {
+					} else if meta.what == constMsgMetaSub {
 						go replyOfflineTopicGetSub(meta.sess, meta.topic, meta.pkt)
 					}
 				} else if meta.pkt.Set != nil {
