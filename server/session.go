@@ -346,6 +346,7 @@ func (s *Session) dispatch(msg *ClientComMessage) {
 
 	case msg.Contact != nil:
 		handler = s.contact
+		msg.id = msg.Contact.Id
 		msg.topic = msg.Contact.Topic
 		uaRefresh = true
 	default:
@@ -1004,7 +1005,11 @@ func (s *Session) contact(msg *ClientComMessage) {
 
 	if sub := s.getSub(expanded); sub != nil {
 		// Pings can be sent to subscribed topics only
-		sub.broadcast <- &ServerComMessage{Contact: &MsgServerContact{
+		sub.broadcast <- &ServerComMessage{
+			id: msg.id,
+			from: msg.from,
+			sess: s,
+			Contact: &MsgServerContact{
 			What:     msg.Contact.What,
 			Sender:   msg.Contact.Sender,
 			Receiver: msg.Contact.Receiver,

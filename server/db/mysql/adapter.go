@@ -2049,7 +2049,7 @@ func (a *adapter) ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.Contac
 }
 
 func (a *adapter) ContactMessageUpdate(user t.Uid, contact t.Uid, state t.ContactMessageState) error {
-	_, err := a.db.Exec("UPDATE contactmsg SET state=? where user=? and contact=?",
+	_, err := a.db.Exec("UPDATE contactmsg SET state=? WHERE user=? AND contact=?",
 		state,
 		store.DecodeUid(user),
 		store.DecodeUid(contact),
@@ -2057,9 +2057,11 @@ func (a *adapter) ContactMessageUpdate(user t.Uid, contact t.Uid, state t.Contac
 	return err
 }
 
-func (a *adapter) ContactMessageDelete(id string) error {
-	_, err := a.db.Exec("DELETE FROM contactmsg WHERE id=?",
-		id)
+func (a *adapter) ContactMessageDelete(user t.Uid, contact t.Uid) error {
+	_, err := a.db.Exec("DELETE FROM contactmsg WHERE user=? AND contact=?",
+		store.DecodeUid(user),
+		store.DecodeUid(contact),
+	)
 	return err
 }
 

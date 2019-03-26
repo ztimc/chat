@@ -275,6 +275,8 @@ type MsgClientDel struct {
 	DelSeq []MsgDelRange `json:"delseq,omitempty"`
 	// Delete contact message by id
 	DelCtMsgId string `json:"delctmsgid,omitempty"`
+	DelCtMsgUser string `json:"delctuser,omitempty"`
+	DelCtMsgContact string `json:"delctcontact,omitempty"`
 	// Delete Contact by id
 	DelCtId string `json:"delctid,omitempty"`
 	// User ID of the user or subscription to delete
@@ -294,6 +296,8 @@ type MsgClientNote struct {
 }
 
 type MsgClientContactMessage struct {
+	// MsgId
+	Id string `json:"id"`
 	// the topic is Sender's meTopic
 	Topic string `json:"topic"`
 	// send message user ID

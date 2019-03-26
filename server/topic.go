@@ -413,25 +413,43 @@ func (t *Topic) run(hub *Hub) {
 					//when someone add contact:
 					//	1. has been added
 					//		fail
-					//	2. Not added
+					//  2. other added
+					// 		add contact
+					//	3. Not added
 					//      save add contact message also notify contact
-					isAddedContactMsg, msgErr := store.ContMsg.IsAdded(user, contact)
+
 					isAddedContact, contactErr := store.Contact.IsAdded(user, contact)
-					if msgErr != nil || contactErr != nil {
+					if contactErr != nil {
 						msg.sess.queueOut(ErrMalformed(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					if isAddedContactMsg || isAddedContact {
+					if isAddedContact {
 						msg.sess.queueOut(ErrAlreadyExists(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					contactId, err := store.ContMsg.Save(user, contact)
-					if err != nil {
-						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
-						continue
-					}
-					t.presContactMessage("ctadd", user, contact, contactId)
 
+					isAdd, _ := store.ContMsg.IsAdded(user, contact)
+					isBeAdd, _ := store.ContMsg.IsAdded(contact, user)
+
+					if isAdd && isBeAdd {
+						if err := store.ContMsg.Update(user, contact, types.Add); err != nil {
+							msg.sess.queueOut(ErrMalformed(msg.id, t.original(asUid), msg.timestamp))
+							continue
+						}
+
+						if err := store.ContMsg.Update(contact, user, types.BeAddedUnread); err != nil {
+							msg.sess.queueOut(ErrMalformed(msg.id, t.original(asUid), msg.timestamp))
+							continue
+						}
+					} else {
+						contactId, err := store.ContMsg.Save(user, contact)
+						if err != nil {
+							msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+							continue
+						}
+
+						t.presContactMessage("ctadd", user, contact, contactId)
+					}
 				case "reject":
 					if err := store.ContMsg.Update(user, contact, types.Reject); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
@@ -441,7 +459,7 @@ func (t *Topic) run(hub *Hub) {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					t.presContactMessage("ctreject", contact, user, msg.Contact.ContactId)
+					t.presContactMessage("ctreject", user, contact, msg.Contact.ContactId)
 				case "agree":
 					if err := store.ContMsg.Update(user, contact, types.Agree); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
@@ -456,12 +474,9 @@ func (t *Topic) run(hub *Hub) {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 						continue
 					}
-					if err := store.Contact.Add(contact, user); err != nil {
-						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
-						continue
-					}
-					t.presContactMessage("ctagree", contact, user, msg.Contact.ContactId)
+					t.presContactMessage("ctagree", user, contact, msg.Contact.ContactId)
 				}
+				msg.sess.queueOut(NoErr(msg.id, t.original(asUid), msg.timestamp))
 			}
 
 			// Broadcast the message. Only {data}, {pres}, {info} {contact} are broadcastable.
@@ -2186,10 +2201,10 @@ func (t *Topic) replyDelTopic(h *Hub, sess *Session, asUid types.Uid, del *MsgCl
 
 func (t *Topic) replyDelContactMessage(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
 	now := types.TimeNow()
-	if err := store.ContMsg.Delete(del.DelCtMsgId); err != nil {
+	if err := store.ContMsg.Delete(types.ParseUserId(del.DelCtMsgUser), types.ParseUserId(del.DelCtMsgContact)); err != nil {
 		return err
 	}
-	t.presContactMessage("ctmdel", asUid, types.ParseUid(del.User), del.DelCtMsgId)
+	t.presContactMessage("ctmdel", types.ParseUserId(del.DelCtMsgUser), types.ParseUserId(del.DelCtMsgContact), del.DelCtMsgId)
 	sess.queueOut(NoErr(del.Id, t.original(asUid), now))
 	return nil
 }

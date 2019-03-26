@@ -147,9 +147,10 @@ type Adapter interface {
 	// ContactMessage update state
 	ContactMessageUpdate(user t.Uid, contact t.Uid, state t.ContactMessageState) error
 	// ContactMessage delete
-	ContactMessageDelete(id string) error
+	ContactMessageDelete(user t.Uid, contact t.Uid) error
 	// ContactMessage return ContactMessage
 	ContactMessageIsAdded(user t.Uid, contact t.Uid) (bool, error)
+
 
 	//Contact
 

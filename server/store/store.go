@@ -619,8 +619,10 @@ func (ContactMessagesObjMapper) Save(user types.Uid, target types.Uid) (string, 
 	return string(contactId), nil
 }
 
-func (ContactMessagesObjMapper) Delete(id string) error {
-	return adp.ContactMessageDelete(id)
+func (ContactMessagesObjMapper) Delete(user types.Uid, contact types.Uid) error {
+	err := adp.ContactMessageDelete(user, contact)
+	err = adp.ContactMessageDelete(contact, user)
+	return err
 }
 
 func (ContactMessagesObjMapper) Update(user types.Uid, contact types.Uid, state types.ContactMessageState) error {
@@ -632,7 +634,7 @@ func (ContactMessagesObjMapper) GetAll(user types.Uid, opts *types.QueryOpt) ([]
 }
 
 func (ContactMessagesObjMapper) IsAdded(user types.Uid, contact types.Uid) (bool, error) {
-	return adp.ContactIsAdd(user, contact)
+	return adp.ContactMessageIsAdded(user, contact)
 }
 
 type ContactObjMapper struct{}
