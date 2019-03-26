@@ -146,6 +146,8 @@ type Adapter interface {
 	ContactMessageForUser(uid t.Uid, opts *t.QueryOpt) ([]t.ContactMessage, error)
 	// ContactMessage update state
 	ContactMessageUpdate(user t.Uid, contact t.Uid, state t.ContactMessageState) error
+	// ContactMessage update by Id
+	ContactMessageUpdateById(id string, state t.ContactMessageState) error
 	// ContactMessage delete
 	ContactMessageDelete(user t.Uid, contact t.Uid) error
 	// ContactMessage return ContactMessage

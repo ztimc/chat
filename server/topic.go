@@ -346,62 +346,76 @@ func (t *Topic) run(hub *Hub) {
 					continue
 				}
 
-				if msg.Info.SeqId > t.lastID {
-					// Drop bogus read notification
-					continue
-				}
+				if msg.Info.What == "kp" || msg.Info.What == "read" || msg.Info.What == "recv" {
 
-				uid := types.ParseUserId(msg.Info.From)
-				pud := t.perUser[uid]
-
-				// Filter out "kp" from users with no 'W' permission (or people without a subscription)
-				if msg.Info.What == "kp" && !(pud.modeGiven & pud.modeWant).IsWriter() {
-					continue
-				}
-
-				if msg.Info.What == "read" || msg.Info.What == "recv" {
-					// Filter out "read/recv" from users with no 'R' permission (or people without a subscription)
-					if !(pud.modeGiven & pud.modeWant).IsReader() {
+					if msg.Info.SeqId > t.lastID {
+						// Drop bogus read notification
 						continue
 					}
 
-					var read, recv int
-					if msg.Info.What == "read" {
-						if msg.Info.SeqId > pud.readID {
-							pud.readID = msg.Info.SeqId
-							read = pud.readID
-						} else {
-							// No need to report stale or bogus read status
+					uid := types.ParseUserId(msg.Info.From)
+					pud := t.perUser[uid]
+
+					// Filter out "kp" from users with no 'W' permission (or people without a subscription)
+					if msg.Info.What == "kp" && !(pud.modeGiven & pud.modeWant).IsWriter() {
+						continue
+					}
+
+					if msg.Info.What == "read" || msg.Info.What == "recv" {
+						// Filter out "read/recv" from users with no 'R' permission (or people without a subscription)
+						if !(pud.modeGiven & pud.modeWant).IsReader() {
 							continue
 						}
-					} else if msg.Info.What == "recv" {
-						if msg.Info.SeqId > pud.recvID {
-							pud.recvID = msg.Info.SeqId
+
+						var read, recv int
+						if msg.Info.What == "read" {
+							if msg.Info.SeqId > pud.readID {
+								pud.readID = msg.Info.SeqId
+								read = pud.readID
+							} else {
+								// No need to report stale or bogus read status
+								continue
+							}
+						} else if msg.Info.What == "recv" {
+							if msg.Info.SeqId > pud.recvID {
+								pud.recvID = msg.Info.SeqId
+								recv = pud.recvID
+							} else {
+								continue
+							}
+						}
+
+						if pud.readID > pud.recvID {
+							pud.recvID = pud.readID
 							recv = pud.recvID
-						} else {
+						}
+
+						if err := store.Subs.Update(t.name, uid,
+							map[string]interface{}{
+								"RecvSeqId": pud.recvID,
+								"ReadSeqId": pud.readID},
+							false); err != nil {
+
+							log.Printf("topic[%s]: failed to update SeqRead/Recv counter: %v", t.name, err)
 							continue
 						}
+
+						// Read/recv updated: notify user's other sessions of the change
+						t.presPubMessageCount(uid, recv, read, msg.skipSid)
+
+						t.perUser[uid] = pud
 					}
 
-					if pud.readID > pud.recvID {
-						pud.recvID = pud.readID
-						recv = pud.recvID
+				} else if msg.Info.What == "ctread" {
+					var state types.ContactMessageState
+					if msg.Info.ContactState == 1 {
+						state = types.BeAdded
+					} else if msg.Info.ContactState == 4 {
+						state = types.BeRejected
 					}
-
-					if err := store.Subs.Update(t.name, uid,
-						map[string]interface{}{
-							"RecvSeqId": pud.recvID,
-							"ReadSeqId": pud.readID},
-						false); err != nil {
-
-						log.Printf("topic[%s]: failed to update SeqRead/Recv counter: %v", t.name, err)
+					if err := store.ContMsg.UpdateById(msg.Info.ContactId, state); err != nil {
 						continue
 					}
-
-					// Read/recv updated: notify user's other sessions of the change
-					t.presPubMessageCount(uid, recv, read, msg.skipSid)
-
-					t.perUser[uid] = pud
 				}
 			} else if msg.Contact != nil {
 

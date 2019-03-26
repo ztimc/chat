@@ -629,6 +629,10 @@ func (ContactMessagesObjMapper) Update(user types.Uid, contact types.Uid, state 
 	return adp.ContactMessageUpdate(user, contact, state)
 }
 
+func (ContactMessagesObjMapper) UpdateById(id string, state types.ContactMessageState) error {
+	return adp.ContactMessageUpdateById(id, state)
+}
+
 func (ContactMessagesObjMapper) GetAll(user types.Uid, opts *types.QueryOpt) ([]types.ContactMessage, error) {
 	return adp.ContactMessageForUser(user, opts)
 }

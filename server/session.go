@@ -972,6 +972,10 @@ func (s *Session) note(msg *ClientComMessage) {
 		if msg.Note.SeqId <= 0 {
 			return
 		}
+	case "ctread":
+		if msg.Note.ContactId == "" {
+			return
+		}
 	default:
 		return
 	}
@@ -979,10 +983,12 @@ func (s *Session) note(msg *ClientComMessage) {
 	if sub := s.getSub(expanded); sub != nil {
 		// Pings can be sent to subscribed topics only
 		sub.broadcast <- &ServerComMessage{Info: &MsgServerInfo{
-			Topic: msg.topic,
-			From:  msg.from,
-			What:  msg.Note.What,
-			SeqId: msg.Note.SeqId,
+			Topic:        msg.topic,
+			From:         msg.from,
+			What:         msg.Note.What,
+			SeqId:        msg.Note.SeqId,
+			ContactId:    msg.Note.ContactId,
+			ContactState: msg.Note.ContactState,
 		}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
@@ -1006,15 +1012,15 @@ func (s *Session) contact(msg *ClientComMessage) {
 	if sub := s.getSub(expanded); sub != nil {
 		// Pings can be sent to subscribed topics only
 		sub.broadcast <- &ServerComMessage{
-			id: msg.id,
+			id:   msg.id,
 			from: msg.from,
 			sess: s,
 			Contact: &MsgServerContact{
-			What:     msg.Contact.What,
-			Sender:   msg.Contact.Sender,
-			Receiver: msg.Contact.Receiver,
-			ContactId: msg.Contact.ContactId,
-		}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
+				What:      msg.Contact.What,
+				Sender:    msg.Contact.Sender,
+				Receiver:  msg.Contact.Receiver,
+				ContactId: msg.Contact.ContactId,
+			}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
 
 	} else if globals.cluster.isRemoteTopic(expanded) {
 		// The topic is handled by a remote node. Forward message to it.
