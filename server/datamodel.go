@@ -453,7 +453,7 @@ type MsgContact struct {
 	Id       string      `json:"id,omitempty"`
 	CreateAt *time.Time  `json:"created,omitempty"`
 	User     string      `json:"user,omitempty"`
-	Contact  string      `json:'contact,omitempty'"`
+	Contact  string      `json:"contact,omitempty"`
 	Public   interface{} `json:"public,omitempty"`
 }
 

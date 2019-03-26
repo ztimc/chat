@@ -653,7 +653,7 @@ func (t *Topic) run(hub *Hub) {
 					err = t.replyDelTopic(hub, meta.sess, asUid, meta.pkt.Del)
 				case constMsgDelContactMsg:
 					err = t.replyDelContactMessage(hub, meta.sess, asUid, meta.pkt.Del)
-				case constMsgMetaContact:
+				case constMsgDelContact:
 					err = t.replyDelContact(hub, meta.sess, asUid, meta.pkt.Del)
 				}
 
@@ -2224,7 +2224,9 @@ func (t *Topic) replyDelContactMessage(h *Hub, sess *Session, asUid types.Uid, d
 }
 
 func (t *Topic) replyDelContact(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {
-	return store.Contact.Delete(del.DelCtId)
+	_ = store.Contact.Delete(types.ParseUserId(del.DelCtMsgUser), types.ParseUserId(del.DelCtMsgContact))
+	_ = store.ContMsg.Delete(types.ParseUserId(del.DelCtMsgUser), types.ParseUserId(del.DelCtMsgContact))
+	return nil
 }
 
 func (t *Topic) replyDelSub(h *Hub, sess *Session, asUid types.Uid, del *MsgClientDel) error {

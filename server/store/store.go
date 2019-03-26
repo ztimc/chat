@@ -665,8 +665,10 @@ func (ContactObjMapper) Add(user types.Uid, contact types.Uid) error {
 	return err
 }
 
-func (ContactObjMapper) Delete(id string) error {
-	return adp.ContactDelete(id)
+func (ContactObjMapper) Delete(user types.Uid, contact types.Uid) error {
+	err := adp.ContactDelete(user, contact)
+	err = adp.ContactDelete(contact, user)
+	return err
 }
 
 func (ContactObjMapper) GetAll(user types.Uid, opts *types.QueryOpt) ([]types.Contact, error) {

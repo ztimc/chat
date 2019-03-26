@@ -2096,12 +2096,12 @@ func (a *adapter) ContactSave(contact *t.Contact) error {
 }
 
 //ContactDelete delete message by id
-func (a *adapter) ContactDelete(id string) error {
+func (a *adapter) ContactDelete(user t.Uid, contact t.Uid) error {
 	now := t.TimeNow()
-	_, err := a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE id=?",
-		now, now, id)
-	_, err = a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE id=?",
-		now, now, id)
+	_, err := a.db.Exec("UPDATE contact SET updatedAt=?, deletedAt=? WHERE user=? and contact=?",
+		now, now,
+		store.DecodeUid(user),
+		store.DecodeUid(contact))
 	return err
 }
 

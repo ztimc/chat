@@ -158,8 +158,8 @@ type Adapter interface {
 
 	//ContactSave save to database
 	ContactSave(contact *t.Contact) error
-	//ContactDelete delete message by id
-	ContactDelete(id string) error
+	//ContactDelete delete message
+	ContactDelete(user t.Uid, contact t.Uid) error
 	//ContactForUser get contact by user
 	ContactForUser(user t.Uid, opts *t.QueryOpt) ([]t.Contact, error)
 	//ContactIsAdd return is add contact

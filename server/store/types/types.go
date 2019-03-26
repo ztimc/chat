@@ -930,8 +930,8 @@ type ContactMessage struct {
 
 type Contact struct {
 	ObjHeader
-	User    string
-	Contact string
+	User    string `json:"user,omitempty"`
+	Contact string `json:"contact,omitempty"`
 	// Contact's info
 	Public interface{}
 }
