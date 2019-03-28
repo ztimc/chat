@@ -456,7 +456,7 @@ func (t *Topic) presPubMessageCount(uid types.Uid, recv, read int, skip string) 
 	}
 }
 
-func (t *Topic) presContactMessage(what string,uid types.Uid, contact types.Uid, contactId string) {
+func (t *Topic) presContactMessage(what string, uid types.Uid, contact types.Uid, contactId string) {
 	globals.hub.route <- &ServerComMessage{
 		Pres: &MsgServerPres{Topic: "me",
 			What:      what,
@@ -465,7 +465,33 @@ func (t *Topic) presContactMessage(what string,uid types.Uid, contact types.Uid,
 		rcptto: contact.UserId()}
 }
 
+func (t *Topic) presSignal(sgAction string, topic string, uid types.Uid, subs []types.Subscription) {
+	sendUser := uid.UserId()
 
+	for i := range subs {
+		sub := subs[i]
+		user := types.ParseUid(sub.User)
+		userId := user.UserId()
+
+		if userId == sendUser {
+			continue
+		}
+
+		userInfo, _ := store.Users.Get(user)
+		globals.hub.route <- &ServerComMessage{
+			Pres: &MsgServerPres{
+				Topic:    "me",
+				What:     "signal",
+				Src:      sendUser,
+				User:     userId,
+				SgAction: sgAction,
+				Room:     userId,
+				Public:   userInfo.Public,
+			},
+			rcptto: userId}
+	}
+
+}
 
 // Let other sessions of a given user know that messages are now deleted
 // Cases V.1, V.2

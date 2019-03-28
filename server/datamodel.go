@@ -314,6 +314,17 @@ type MsgClientContactMessage struct {
 	What string `json:"what"`
 }
 
+type MsgClientSignal struct {
+	// MsgId
+	Id string `json:"id"`
+	// The topic
+	Topic string `json:"topic"`
+	// Target topic, command send to the topic
+	Target string `json:"target"`
+	// Command
+	Command string `json:"command"`
+}
+
 // ClientComMessage is a wrapper for client messages.
 type ClientComMessage struct {
 	Hi      *MsgClientHi             `json:"hi"`
@@ -327,6 +338,7 @@ type ClientComMessage struct {
 	Del     *MsgClientDel            `json:"del"`
 	Note    *MsgClientNote           `json:"note"`
 	Contact *MsgClientContactMessage `json:"contact"`
+	Signal  *MsgClientSignal         `json:"signal"`
 
 	// Message ID denormalized
 	id string
@@ -492,6 +504,12 @@ type MsgServerPres struct {
 	AcsTarget string        `json:"tgt,omitempty"`
 	AcsActor  string        `json:"act,omitempty"`
 	ContactId string        `json:"ct,omitempty"`
+
+	SgAction string      `json:"sgAction,omitempty"`
+	Room     string      `json:"room,omitempty"`
+	User     string      `json:"user,omitempty"`
+	Public   interface{} `json:"pub,omitempty"`
+
 	// Acs or a delta Acs. Need to marshal it to json under a name different than 'acs'
 	// to allow different handling on the client
 	Acs *MsgAccessMode `json:"dacs,omitempty"`
@@ -548,7 +566,7 @@ type MsgServerInfo struct {
 	// Server-issued message ID being reported
 	SeqId int `json:"seq,omitempty"`
 	// Server-issued contact message ID being reported
-	ContactId    string `json:"ctid,omitempty"`
+	ContactId string `json:"ctid,omitempty"`
 	// Contact message state
 	ContactState int `json:"ctstate,omitempty"`
 }
@@ -563,6 +581,11 @@ type MsgServerContact struct {
 	ContactId string `json:"contactId"`
 }
 
+type MsgServerSignal struct {
+	Target  string `json:"target"`
+	Command string `json:"command"`
+}
+
 // ServerComMessage is a wrapper for server-side messages.
 type ServerComMessage struct {
 	Ctrl    *MsgServerCtrl    `json:"ctrl,omitempty"`
@@ -571,6 +594,7 @@ type ServerComMessage struct {
 	Pres    *MsgServerPres    `json:"pres,omitempty"`
 	Info    *MsgServerInfo    `json:"info,omitempty"`
 	Contact *MsgServerContact `json:"contact,omitempty"`
+	Signal  *MsgServerSignal  `json:"signal,omitempty"`
 
 	// MsgServerData has no Id field, copying it here for use in {ctrl} aknowledgements
 	id string

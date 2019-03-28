@@ -491,11 +491,17 @@ func (t *Topic) run(hub *Hub) {
 					t.presContactMessage("ctagree", user, contact, msg.Contact.ContactId)
 				}
 				msg.sess.queueOut(NoErr(msg.id, t.original(asUid), msg.timestamp))
+			} else if msg.Signal != nil {
+				subs, e := store.Topics.GetSubs(msg.Signal.Target, nil)
+				if e == nil {
+					msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+				}
+				t.presSignal(msg.Signal.Command, msg.Signal.Target, asUid, subs)
 			}
 
 			// Broadcast the message. Only {data}, {pres}, {info} {contact} are broadcastable.
 			// {meta} and {ctrl} are sent to the session only
-			if msg.Data != nil || msg.Pres != nil || msg.Info != nil || msg.Contact != nil {
+			if msg.Data != nil || msg.Pres != nil || msg.Info != nil || msg.Contact != nil || msg.Signal != nil {
 				for sess := range t.sessions {
 					if sess.sid == msg.skipSid {
 						continue
