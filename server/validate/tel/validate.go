@@ -84,9 +84,35 @@ func (v *validator) send(to, body string) error {
 }
 
 // ResetSecret sends a message with instructions for resetting an authentication secret.
-func (*validator) ResetSecret(cred, scheme, lang string, tmpToken []byte) error {
-	// TODO: send SMS with rest instructions.
-	return nil
+func (v *validator) ResetSecret(cred, scheme, lang string, tmpToken []byte) error {
+	resp := strconv.FormatInt(int64(rand.Intn(maxCodeValue)), 10)
+	resp = strings.Repeat("0", codeLength-len(resp)) + resp
+
+	if err := v.send(cred, resp); err != nil {
+		return err
+	}
+
+	uid, err := store.Users.GetByCred("tel", cred)
+	if err != nil {
+		return err
+	}
+
+	err = store.Users.DelCred(uid, "tel")
+
+	if err := store.Forgot.SaveForgot(&t.Forgot{
+		Token: tmpToken,
+		Tel:   cred,
+		Done:  false,
+	}); err != nil {
+		return err
+	}
+
+	return store.Users.SaveCred(&t.Credential{
+		User:   uid.String(),
+		Method: "tel",
+		Value:  cred,
+		Resp:   resp,
+	})
 }
 
 // Check checks validity of user's response.

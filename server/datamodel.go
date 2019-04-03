@@ -642,6 +642,16 @@ func NoErrAccepted(id, topic string, ts time.Time) *ServerComMessage {
 		Timestamp: ts}}
 }
 
+func NoErrParams(id, topic string, params interface{}, ts time.Time) *ServerComMessage {
+	return &ServerComMessage{Ctrl: &MsgServerCtrl{
+		Id:        id,
+		Code:      http.StatusOK, // 200
+		Text:      "ok",
+		Topic:     topic,
+		Params:    params,
+		Timestamp: ts}}
+}
+
 // NoErrEvicted indicates that the user was disconnected from topic for no fault of the user (205).
 func NoErrEvicted(id, topic string, ts time.Time) *ServerComMessage {
 	return &ServerComMessage{Ctrl: &MsgServerCtrl{

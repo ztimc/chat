@@ -214,6 +214,20 @@ func (a *adapter) CreateDb(reset bool) error {
 		return err
 	}
 
+	// forgot token
+	if _, err = tx.Exec(
+		`CREATE TABLE forgot(
+			 id INT NOT NULL AUTO_INCREMENT,
+			 createdat datetime(3) NOT NULL,
+  			 updatedat datetime(3) NOT NULL,
+  			 token binary(255) NOT NULL,
+		     tel varchar(12) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			 done tinyint(4) NOT NULL DEFAULT '0',
+			 PRIMARY KEY (id),
+		)`); err != nil {
+		return err
+	}
+
 	// Indexed devices. Normalized into a separate table.
 	if _, err = tx.Exec(
 		`CREATE TABLE devices(
@@ -883,7 +897,7 @@ func (a *adapter) UserUpdateTags(uid t.Uid, tags []string, reset bool) error {
 // UserGetByCred returns user ID for the given validated credential.
 func (a *adapter) UserGetByCred(method, value string) (t.Uid, error) {
 	var decoded_uid int64
-	err := a.db.Get(&decoded_uid, "SELECT userid FROM credentials WHERE synthetic=?", method+":"+value)
+	err := a.db.Get(&decoded_uid, "SELECT userid FROM credentials WHERE value=?", value)
 	if err == nil {
 		return store.EncodeUid(decoded_uid), nil
 	}
@@ -2379,6 +2393,42 @@ func (a *adapter) CredGet(uid t.Uid, method string) ([]*t.Credential, error) {
 	rows.Close()
 
 	return result, err
+}
+
+// forgot management
+
+//Forget Add
+func (a *adapter) ForgotAdd(forgot *t.Forgot) error {
+	_, err := a.db.Exec("INSERT INTO forgot(createdat,updatedat,token,tel,done) "+
+		"VALUES(?,?,?,?,?)",
+		forgot.CreatedAt, forgot.UpdatedAt, forgot.Token, forgot.Tel, forgot.Done)
+	if isDupe(err) {
+		return t.ErrDuplicate
+	}
+	return err
+}
+
+//Forget update
+func (a *adapter) ForgotUpd(tel string) error {
+	_, err := a.db.Exec("UPDATE forgot SET updatedat=?,done=1 WHERE tel=?",
+		t.TimeNow(), tel)
+
+	return err
+}
+
+//Forget get
+func (a *adapter) ForgotGet(tel string) (*t.Forgot, error) {
+	query := "select * from forgot where tel=?"
+
+	var forgot t.Forgot
+	err := a.db.Get(&forgot, query, tel)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, nil
+	}
+	return &forgot,nil
 }
 
 // FileUploads

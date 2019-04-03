@@ -619,6 +619,44 @@ func (s *Session) login(msg *ClientComMessage) {
 		return
 	}
 
+	// check forgot
+	if msg.Login.Scheme == "forgot" {
+		var credMethod, credValue, resp string
+		credMethod = msg.Login.Cred[0].Method
+		credValue = msg.Login.Cred[0].Value
+		resp = msg.Login.Cred[0].Response
+
+		uid, err := store.Users.GetByCred(credMethod, credValue)
+		if err != nil {
+			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			return
+		}
+
+		vld := store.GetValidator(credMethod)
+		_, err = vld.Check(uid, resp)
+		if err != nil {
+			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			return
+		}
+		err = store.Forgot.ConfirmForgot(credValue)
+		if err != nil {
+			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			return
+		}
+
+		forgot, err := store.Forgot.GetForgot(credValue)
+		if err != nil {
+			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			return
+		}
+		s.queueOut(NoErrParams(
+			msg.Login.Id,
+			"",
+			map[string]interface{}{"tempToken": forgot.Token, "userid": uid.UserId()},
+			msg.timestamp))
+		return
+	}
+
 	if !s.uid.IsZero() {
 		s.queueOut(ErrAlreadyAuthenticated(msg.id, "", msg.timestamp))
 		return

@@ -221,7 +221,7 @@ func replyUpdateUser(s *Session, msg *ClientComMessage, rec *auth.Rec) {
 	}
 
 	uid := types.ParseUserId(userId)
-	if uid.IsZero() || authLvl == auth.LevelNone {
+	if uid.IsZero() {
 		// Either msg.Acc.User or msg.Acc.AuthLevel contains invalid data.
 		s.queueOut(ErrMalformed(msg.id, "", msg.timestamp))
 		log.Println("replyUpdateUser: either user id or auth level is missing", s.sid)

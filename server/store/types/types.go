@@ -658,6 +658,14 @@ type Credential struct {
 	Retries int
 }
 
+type Forgot struct {
+	ObjHeader
+	Token []byte
+	Tel   string
+	UserId string
+	Done  bool
+}
+
 // Subscription to a topic
 type Subscription struct {
 	ObjHeader

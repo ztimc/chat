@@ -61,6 +61,15 @@ type Adapter interface {
 	// CredFail increments count of failed validation attepmts for the given credentials.
 	CredFail(uid t.Uid, method string) error
 
+	//Forgot management
+
+	//Forget Add
+	ForgotAdd(forgot *t.Forgot) error
+	//Forget update
+	ForgotUpd(tel string) error
+	//Forget get
+	ForgotGet(tel string) (*t.Forgot, error)
+
 	// Authentication management for the basic authentication scheme
 
 	// AuthGetUniqueRecord returns authentication record for a given unique value i.e. login.

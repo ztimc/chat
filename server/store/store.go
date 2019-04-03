@@ -150,6 +150,23 @@ func EncodeUid(id int64) types.Uid {
 	return uGen.EncodeInt64(id)
 }
 
+type ForgotMapper struct{}
+
+var Forgot ForgotMapper
+
+func (ForgotMapper) SaveForgot(forgot *types.Forgot) error {
+	forgot.InitTimes()
+	return adp.ForgotAdd(forgot)
+}
+
+func (ForgotMapper) ConfirmForgot(tel string) error {
+	return adp.ForgotUpd(tel)
+}
+
+func (ForgotMapper) GetForgot(tel string) (*types.Forgot, error) {
+	return adp.ForgotGet(tel)
+}
+
 // UsersObjMapper is a users struct to hold methods for persistence mapping for the User object.
 type UsersObjMapper struct{}
 
