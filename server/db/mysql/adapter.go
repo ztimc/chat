@@ -2167,7 +2167,7 @@ func (a *adapter) ContactForUser(user t.Uid, opts *t.QueryOpt) ([]t.Contact, err
 func (a *adapter) ContactIsAdd(user t.Uid, contact t.Uid) (bool, error) {
 
 	var id int
-	err := a.db.Get(&id, "SELECT id FROM contact WHERE user=? AND contact=?",
+	err := a.db.Get(&id, "SELECT id FROM contact WHERE user=? AND contact=? and deletedat is null",
 		store.DecodeUid(user), store.DecodeUid(contact))
 	if err == sql.ErrNoRows {
 		// Nothing found, clear the error, otherwise it will be reported as internal error.

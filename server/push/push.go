@@ -25,7 +25,8 @@ type Receipt struct {
 	// List of recipients, including those who did not receive the message
 	To []Recipient `json:"to"`
 	// Actual content to be delivered to the client
-	Payload Payload `json:"payload"`
+	Payload  Payload  `json:"payload"`
+	Payload2 Payload2 `json:"payload2"`
 }
 
 // Payload is content of the push.
@@ -37,6 +38,33 @@ type Payload struct {
 	ContentType string    `json:"mime"`
 	// Actual Data.Content of the message, if requested
 	Content interface{} `json:"content,omitempty"`
+}
+
+type PayloadType int
+
+const (
+	// Message type
+	PAYLOAD_MESSAGE PayloadType = iota
+	// Contact type
+	PAYLOAD_CONTACT
+	// Contact Signal
+	PAYLOAD_SIGNAL
+)
+
+// only support ios and android
+type Platform int
+
+const (
+	ANDROID Platform = iota
+	IOS
+	ALL
+)
+
+type Payload2 struct {
+	Type PayloadType
+	Plat Platform
+	// msg content, will be convert json
+	Content interface{}
 }
 
 // Handler is an interface which must be implemented by handlers.
