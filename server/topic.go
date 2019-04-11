@@ -317,7 +317,7 @@ func (t *Topic) run(hub *Hub) {
 					msg.sess.queueOut(reply)
 				}
 
-				pushRcpt = t.makePushReceipt(from, msg.Data)
+				pushRcpt = t.makeDataReceipt(from, msg.Data)
 
 				// Message sent: notify offline 'R' subscrbers on 'me'
 				t.presSubsOffline("msg", &presParams{seqID: t.lastID},
@@ -463,6 +463,7 @@ func (t *Topic) run(hub *Hub) {
 						}
 
 						t.presContactMessage("ctadd", user, contact, contactId)
+						pushRcpt = t.makeContactReceipt(contact, "收到一条好友请求")
 					}
 				case "reject":
 					if err := store.ContMsg.Update(user, contact, types.Reject); err != nil {
@@ -474,6 +475,7 @@ func (t *Topic) run(hub *Hub) {
 						continue
 					}
 					t.presContactMessage("ctreject", user, contact, msg.Contact.ContactId)
+					pushRcpt = t.makeContactReceipt(contact, "收到拒绝添加联系人请求")
 				case "agree":
 					if err := store.ContMsg.Update(user, contact, types.Agree); err != nil {
 						msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
@@ -489,6 +491,7 @@ func (t *Topic) run(hub *Hub) {
 						continue
 					}
 					t.presContactMessage("ctagree", user, contact, msg.Contact.ContactId)
+					pushRcpt = t.makeContactReceipt(contact, "收到有人同意添加你为好友消息")
 				}
 				msg.sess.queueOut(NoErr(msg.id, t.original(asUid), msg.timestamp))
 			} else if msg.Signal != nil {
@@ -496,7 +499,10 @@ func (t *Topic) run(hub *Hub) {
 				if e == nil {
 					msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
 				}
-				t.presSignal(msg.Signal.Command, msg.Signal.Target, asUid, subs)
+				t.presSignal(msg.Signal.Command, msg.Signal.Room, asUid, subs)
+				if msg.Signal.Command == "audio" || msg.Signal.Command == "video" {
+					pushRcpt = t.makeSignalReceipt(asUid, subs, "你收到一个新来电", msg.Signal.Room)
+				}
 			}
 
 			// Broadcast the message. Only {data}, {pres}, {info} {contact} are broadcastable.
@@ -2484,6 +2490,90 @@ func (t *Topic) makePushReceipt(fromUid types.Uid, data *MsgServerData) *pushRec
 		}
 	}
 
+	return &pushReceipt{rcpt: &receipt, uidMap: idx}
+}
+
+func (t *Topic) makeDataReceipt(fromUid types.Uid, data *MsgServerData) *pushReceipt {
+	idx := make(map[types.Uid]int, t.subsCount())
+
+	// The `Topic` in the push receipt is `t.xoriginal` for group topics, `fromUid` for p2p topics,
+	// not the t.original(fromUid) because it's the topic name as seen by the recepient, not by the sender.
+	topic := t.xoriginal
+	if t.cat == types.TopicCatP2P {
+		topic = fromUid.UserId()
+	}
+
+	// Initialize the push receipt.
+	receipt := push.Receipt{
+		To: make([]push.Recipient, t.subsCount()),
+		Payload: push.Payload{
+			Topic:     topic,
+			From:      data.From,
+			Timestamp: data.Timestamp,
+			SeqId:     data.SeqId,
+			Content:   data.Content},
+		Payload2: push.Payload2{
+			Type:    push.PayloadMessage,
+			Plat:    push.ALL,
+			Title:   "",
+			Content: "你收到一条消息",
+			Params:  map[string]string{"topic": topic},
+		}}
+
+	i := 0
+	for uid := range t.perUser {
+		// Done't send to the originating user, send only to those who have notifications enabled.
+		if uid != fromUid &&
+			(t.perUser[uid].modeWant & t.perUser[uid].modeGiven).IsPresencer() &&
+			!t.perUser[uid].deleted {
+
+			receipt.To[i].User = uid
+			idx[uid] = i
+			i++
+		}
+	}
+
+	return &pushReceipt{rcpt: &receipt, uidMap: idx}
+}
+
+func (t *Topic) makeContactReceipt(toUser types.Uid, msg string) *pushReceipt {
+	idx := make(map[types.Uid]int, 1)
+
+	receipt := push.Receipt{
+		To: make([]push.Recipient, 1),
+		Payload2: push.Payload2{
+			Type:    push.PayloadContact,
+			Plat:    push.ALL,
+			Title:   "",
+			Content: msg,
+		}}
+
+	receipt.To[0].User = toUser
+	idx[toUser] = 0
+
+	return &pushReceipt{rcpt: &receipt, uidMap: idx}
+}
+
+func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, msg string, room string) *pushReceipt {
+	idx := make(map[types.Uid]int, 1)
+
+	receipt := push.Receipt{
+		To: make([]push.Recipient, 1),
+		Payload2: push.Payload2{
+			Type:    push.PayloadSignal,
+			Plat:    push.ALL,
+			Title:   "",
+			Content: msg,
+			Params:  map[string]string{"room": room},
+		}}
+
+	for i, sub := range subs {
+		uid := types.ParseUid(sub.User)
+		if uid != fromUid {
+			receipt.To[i].User = uid
+			idx[uid] = i
+		}
+	}
 	return &pushReceipt{rcpt: &receipt, uidMap: idx}
 }
 

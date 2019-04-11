@@ -458,14 +458,15 @@ func (t *Topic) presPubMessageCount(uid types.Uid, recv, read int, skip string) 
 
 func (t *Topic) presContactMessage(what string, uid types.Uid, contact types.Uid, contactId string) {
 	globals.hub.route <- &ServerComMessage{
-		Pres: &MsgServerPres{Topic: "me",
+		Pres: &MsgServerPres{
+			Topic:     "me",
 			What:      what,
 			Src:       t.original(uid),
 			ContactId: contactId},
 		rcptto: contact.UserId()}
 }
 
-func (t *Topic) presSignal(sgAction string, topic string, uid types.Uid, subs []types.Subscription) {
+func (t *Topic) presSignal(sgAction string, room string, uid types.Uid, subs []types.Subscription) {
 	sendUser := uid.UserId()
 
 	for i := range subs {
@@ -485,7 +486,7 @@ func (t *Topic) presSignal(sgAction string, topic string, uid types.Uid, subs []
 				Src:      sendUser,
 				User:     userId,
 				SgAction: sgAction,
-				Room:     userId,
+				Room:     room,
 				Public:   userInfo.Public,
 			},
 			rcptto: userId}

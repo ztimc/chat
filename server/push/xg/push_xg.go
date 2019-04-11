@@ -129,7 +129,6 @@ func sendNotifications(rcpt *push.Receipt) {
 	skipDevices := make(map[string]bool)
 	for i, to := range rcpt.To {
 		uids[i] = to.User
-
 		// Some devices were online and received the message. Skip them.
 		for _, deviceID := range to.Devices {
 			skipDevices[deviceID] = true
@@ -152,7 +151,7 @@ func sendNotifications(rcpt *push.Receipt) {
 			if _, ok := skipDevices[d.DeviceId]; !ok && d.DeviceId != "" {
 				switch d.Platform {
 				case "ios":
-					pushIos(d.DeviceId, "", "你收到一条新消息", "")
+					pushIos(d.DeviceId, &rcpt.Payload2)
 				case "android":
 				}
 			}
@@ -165,7 +164,7 @@ func pushAndroid(account string) {
 
 }
 
-func pushIos(account string, title string, content string, subTitle string) {
+func pushIos(account string, pl *push.Payload2) {
 	url := "https://openapi.xg.qq.com/v3/push/app"
 
 	params := xgParams{
@@ -175,15 +174,16 @@ func pushIos(account string, title string, content string, subTitle string) {
 		AccountList:  []string{account},
 		Environment:  "dev",
 		Message: &Message{
-			Title:   title,
-			Content: content,
+			Title:   pl.Title,
+			Content: pl.Content,
 			IOS: &IOSParams{
 				Aps: &Aps{
-					Alert:    map[string]string{"subtitle": subTitle},
+					Alert:    map[string]string{"subtitle": ""},
 					Badge:    -2,
 					Category: "INVITE_CATEGORY",
 					Sound:    "Tassel.wav",
 				},
+				Custom: pl.Params,
 			},
 		},
 	}

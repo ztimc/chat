@@ -1092,6 +1092,7 @@ func (s *Session) signal(msg *ClientComMessage) {
 			Signal: &MsgServerSignal{
 				Target:  msg.Signal.Target,
 				Command: msg.Signal.Command,
+				Room:    msg.Signal.Room,
 			}, rcptto: expanded, timestamp: msg.timestamp, skipSid: s.sid}
 
 	} else if globals.cluster.isRemoteTopic(expanded) {

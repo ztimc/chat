@@ -44,11 +44,11 @@ type PayloadType int
 
 const (
 	// Message type
-	PAYLOAD_MESSAGE PayloadType = iota
+	PayloadMessage PayloadType = iota
 	// Contact type
-	PAYLOAD_CONTACT
+	PayloadContact
 	// Contact Signal
-	PAYLOAD_SIGNAL
+	PayloadSignal
 )
 
 // only support ios and android
@@ -61,10 +61,12 @@ const (
 )
 
 type Payload2 struct {
-	Type PayloadType
-	Plat Platform
-	// msg content, will be convert json
-	Content interface{}
+	Type    PayloadType
+	Plat    Platform
+	Title   string
+	Content string
+	// Client handler params
+	Params map[string]string
 }
 
 // Handler is an interface which must be implemented by handlers.

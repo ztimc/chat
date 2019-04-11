@@ -323,6 +323,8 @@ type MsgClientSignal struct {
 	Target string `json:"target"`
 	// Command
 	Command string `json:"command"`
+	// Room id
+	Room string `json:"room"`
 }
 
 // ClientComMessage is a wrapper for client messages.
@@ -584,6 +586,7 @@ type MsgServerContact struct {
 type MsgServerSignal struct {
 	Target  string `json:"target"`
 	Command string `json:"command"`
+	Room    string `json:"room"`
 }
 
 // ServerComMessage is a wrapper for server-side messages.
