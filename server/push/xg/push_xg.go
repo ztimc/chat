@@ -65,7 +65,7 @@ type AndroidParams struct {
 // IOSParams iOS push参数
 type IOSParams struct {
 	Aps    *Aps              `json:"aps,omitempty"`
-	Custom map[string]string `json:"custom,omitempty"`
+	Custom map[string]interface{} `json:"custom,omitempty"`
 }
 
 // Aps 通知栏iOS消息的aps字段，详情请参照苹果文档
@@ -166,6 +166,15 @@ func pushAndroid(account string) {
 
 func pushIos(account string, pl *push.Payload2) {
 	url := "https://openapi.xg.qq.com/v3/push/app"
+
+	switch pl.Type {
+	case push.PayloadMessage:
+		pl.Params["action"] = "message"
+	case push.PayloadContact:
+		pl.Params["action"] = "contact"
+	case push.PayloadSignal:
+		pl.Params["action"] = "signal"
+	}
 
 	params := xgParams{
 		AudienceType: "account",

@@ -501,7 +501,7 @@ func (t *Topic) run(hub *Hub) {
 				}
 				t.presSignal(msg.Signal.Command, msg.Signal.Room, asUid, subs)
 				if msg.Signal.Command == "audio" || msg.Signal.Command == "video" {
-					pushRcpt = t.makeSignalReceipt(asUid, subs, "你收到一个新来电", msg.Signal.Room)
+					pushRcpt = t.makeSignalReceipt(asUid, subs, "你收到一个新来电", msg.Signal.Room, msg.Signal.Command)
 				}
 			}
 
@@ -2517,7 +2517,7 @@ func (t *Topic) makeDataReceipt(fromUid types.Uid, data *MsgServerData) *pushRec
 			Plat:    push.ALL,
 			Title:   "",
 			Content: "你收到一条消息",
-			Params:  map[string]string{"topic": topic},
+			Params:  map[string]interface{}{"topic": topic},
 		}}
 
 	i := 0
@@ -2554,9 +2554,17 @@ func (t *Topic) makeContactReceipt(toUser types.Uid, msg string) *pushReceipt {
 	return &pushReceipt{rcpt: &receipt, uidMap: idx}
 }
 
-func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, msg string, room string) *pushReceipt {
+func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, msg string, room string, command string) *pushReceipt {
 	idx := make(map[types.Uid]int, 1)
 
+	params := make(map[string]interface{})
+	params["pres"] = &MsgServerPres{
+		Topic: "me",
+		What: "signal",
+		Src: fromUid.UserId(),
+		SgAction: command,
+		Room: room,
+	}
 	receipt := push.Receipt{
 		To: make([]push.Recipient, 1),
 		Payload2: push.Payload2{
@@ -2564,7 +2572,7 @@ func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, 
 			Plat:    push.ALL,
 			Title:   "",
 			Content: msg,
-			Params:  map[string]string{"room": room},
+			Params:  params,
 		}}
 
 	for i, sub := range subs {

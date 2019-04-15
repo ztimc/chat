@@ -66,7 +66,7 @@ type Payload2 struct {
 	Title   string
 	Content string
 	// Client handler params
-	Params map[string]string
+	Params map[string]interface{}
 }
 
 // Handler is an interface which must be implemented by handlers.
