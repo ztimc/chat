@@ -503,6 +503,10 @@ func (t *Topic) run(hub *Hub) {
 				if msg.Signal.Command == "audio" || msg.Signal.Command == "video" {
 					pushRcpt = t.makeSignalReceipt(asUid, subs, "你收到一个新来电", msg.Signal.Room, msg.Signal.Command)
 				}
+
+				if msg.Signal.Command == "leave" {
+					pushRcpt = t.makeSignalReceipt(asUid, subs, "对方已经取消", msg.Signal.Room, msg.Signal.Command)
+				}
 			}
 
 			// Broadcast the message. Only {data}, {pres}, {info} {contact} are broadcastable.
@@ -2517,20 +2521,28 @@ func (t *Topic) makeDataReceipt(fromUid types.Uid, data *MsgServerData) *pushRec
 			Plat:    push.ALL,
 			Title:   "",
 			Content: "你收到一条消息",
-			Params:  map[string]interface{}{"topic": topic},
+			Params: map[string]interface{}{
+				"topic":  topic,
+				"action": "message"},
 		}}
 
 	i := 0
 	for uid := range t.perUser {
-		// Done't send to the originating user, send only to those who have notifications enabled.
 		if uid != fromUid &&
 			(t.perUser[uid].modeWant & t.perUser[uid].modeGiven).IsPresencer() &&
 			!t.perUser[uid].deleted {
-
+			if topic := globals.hub.topicGet(uid.UserId()); topic != nil {
+				if topic.perUser[uid].online > 0 {
+					continue
+				}
+			}
 			receipt.To[i].User = uid
 			idx[uid] = i
 			i++
 		}
+	}
+	if i == 0 {
+		return nil
 	}
 
 	return &pushReceipt{rcpt: &receipt, uidMap: idx}
@@ -2538,7 +2550,8 @@ func (t *Topic) makeDataReceipt(fromUid types.Uid, data *MsgServerData) *pushRec
 
 func (t *Topic) makeContactReceipt(toUser types.Uid, msg string) *pushReceipt {
 	idx := make(map[types.Uid]int, 1)
-
+	params := make(map[string]interface{})
+	params["action"] = "contact"
 	receipt := push.Receipt{
 		To: make([]push.Recipient, 1),
 		Payload2: push.Payload2{
@@ -2546,9 +2559,16 @@ func (t *Topic) makeContactReceipt(toUser types.Uid, msg string) *pushReceipt {
 			Plat:    push.ALL,
 			Title:   "",
 			Content: msg,
+			Params:  params,
 		}}
 
+	if topic := globals.hub.topicGet(toUser.UserId()); topic != nil {
+		if topic.perUser[toUser].online > 0 {
+			return nil
+		}
+	}
 	receipt.To[0].User = toUser
+
 	idx[toUser] = 0
 
 	return &pushReceipt{rcpt: &receipt, uidMap: idx}
@@ -2558,13 +2578,17 @@ func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, 
 	idx := make(map[types.Uid]int, 1)
 
 	params := make(map[string]interface{})
-	params["pres"] = &MsgServerPres{
-		Topic: "me",
-		What: "signal",
-		Src: fromUid.UserId(),
-		SgAction: command,
-		Room: room,
+	params["action"] = "signal"
+	if command != "leave" {
+		params["pres"] = &MsgServerPres{
+			Topic:    "me",
+			What:     "signal",
+			Src:      fromUid.UserId(),
+			SgAction: command,
+			Room:     room,
+		}
 	}
+
 	receipt := push.Receipt{
 		To: make([]push.Recipient, 1),
 		Payload2: push.Payload2{
@@ -2578,6 +2602,11 @@ func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, 
 	for i, sub := range subs {
 		uid := types.ParseUid(sub.User)
 		if uid != fromUid {
+			if topic := globals.hub.topicGet(uid.UserId()); topic != nil {
+				if topic.perUser[uid].online > 0 {
+					continue
+				}
+			}
 			receipt.To[i].User = uid
 			idx[uid] = i
 		}

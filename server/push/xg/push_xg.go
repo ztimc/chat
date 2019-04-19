@@ -176,6 +176,8 @@ func pushIos(account string, pl *push.Payload2) {
 		pl.Params["action"] = "signal"
 	}
 
+
+
 	params := xgParams{
 		AudienceType: "account",
 		Platform:     "ios",
