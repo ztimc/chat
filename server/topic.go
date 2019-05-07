@@ -496,8 +496,9 @@ func (t *Topic) run(hub *Hub) {
 				msg.sess.queueOut(NoErr(msg.id, t.original(asUid), msg.timestamp))
 			} else if msg.Signal != nil {
 				subs, e := store.Topics.GetSubs(msg.Signal.Target, nil)
-				if e == nil {
+				if e != nil {
 					msg.sess.queueOut(ErrUnknown(msg.id, t.original(asUid), msg.timestamp))
+					continue
 				}
 				t.presSignal(msg.Signal.Command, msg.Signal.Room, asUid, subs)
 				if msg.Signal.Command == "audio" || msg.Signal.Command == "video" {
