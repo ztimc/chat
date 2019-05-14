@@ -18,6 +18,7 @@ var handler XgPush
 
 // How much to buffer the input channel.
 const defaultBuffer = 32
+const pushUrl = "https://openapi.xg.qq.com/v3/push/app"
 
 type XgPush struct {
 	initialized bool
@@ -33,6 +34,7 @@ type xgParams struct {
 	MessageType  string   `json:"message_type,omitempty"`
 	AccountList  []string `json:"account_list,omitempty"`
 	Environment  string   `json:"environment,omitempty"`
+	MultiPkg     bool   `json:"multi_pkg,omitempty"`
 }
 
 type Message struct {
@@ -59,12 +61,12 @@ type AndroidParams struct {
 	StyleID       int                    `json:"style_id,omitempty"`
 	SmallIcon     int                    `json:"small_icon,omitempty"`
 	Action        map[string]interface{} `json:"action,omitempty"`
-	CustomContent map[string]string      `json:"custom_content,omitempty"`
+	CustomContent map[string]interface{} `json:"custom_content,omitempty"`
 }
 
 // IOSParams iOS push参数
 type IOSParams struct {
-	Aps    *Aps              `json:"aps,omitempty"`
+	Aps    *Aps                   `json:"aps,omitempty"`
 	Custom map[string]interface{} `json:"custom,omitempty"`
 }
 
@@ -104,8 +106,6 @@ func (XgPush) Init(jsonconf string) error {
 	if config.Buffer <= 0 {
 		config.Buffer = defaultBuffer
 	}
-
-	handler.auther = &auth.Auther{AppID: "dafad9c3e5de3", SecretKey: "4ae0cf1a0d2159b1cda8b3ae347885cc"}
 
 	handler.input = make(chan *push.Receipt, config.Buffer)
 	handler.stop = make(chan bool, 1)
@@ -153,6 +153,7 @@ func sendNotifications(rcpt *push.Receipt) {
 				case "ios":
 					pushIos(d.DeviceId, &rcpt.Payload2)
 				case "android":
+					pushAndroid(d.DeviceId, &rcpt.Payload2)
 				}
 			}
 		}
@@ -160,12 +161,7 @@ func sendNotifications(rcpt *push.Receipt) {
 
 }
 
-func pushAndroid(account string) {
-
-}
-
-func pushIos(account string, pl *push.Payload2) {
-	url := "https://openapi.xg.qq.com/v3/push/app"
+func pushAndroid(account string, pl *push.Payload2) {
 
 	switch pl.Type {
 	case push.PayloadMessage:
@@ -176,7 +172,53 @@ func pushIos(account string, pl *push.Payload2) {
 		pl.Params["action"] = "signal"
 	}
 
+	params := xgParams{
+		AudienceType: "account",
+		Platform:     "android",
+		MessageType:  "notify",
+		MultiPkg:     true,
+		AccountList:  []string{account},
+		Message: &Message{
+			Title:   "ICN",
+			Content: pl.Content,
+			Android: &AndroidParams{
+				CustomContent: pl.Params,
+			},
+		},
+	}
 
+	jsonBytes, err := json.Marshal(params)
+	if err != nil {
+		log.Fatalln("xg push err ", err)
+	}
+	log.Printf("fucking json is %s", string(jsonBytes))
+	payload := bytes.NewReader(jsonBytes)
+
+	req, _ := http.NewRequest("POST", pushUrl, payload)
+
+	req.Header.Add("content-type", "application/json")
+	req.Header.Add("authorization", "Basic NTYyYTY1ZjA3NTAwZjoyZDE1YTA5NDhjYzQ4NTgzOTAwZTUwODFlNWQyZmViMQ")
+	req.Header.Add("cache-control", "no-cache")
+
+	res, _ := http.DefaultClient.Do(req)
+
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	fmt.Println(res)
+	fmt.Println(string(body))
+}
+
+func pushIos(account string, pl *push.Payload2) {
+
+	switch pl.Type {
+	case push.PayloadMessage:
+		pl.Params["action"] = "message"
+	case push.PayloadContact:
+		pl.Params["action"] = "contact"
+	case push.PayloadSignal:
+		pl.Params["action"] = "signal"
+	}
 
 	params := xgParams{
 		AudienceType: "account",
@@ -206,7 +248,7 @@ func pushIos(account string, pl *push.Payload2) {
 	payload := bytes.NewReader(jsonBytes)
 	log.Println("fucking json ", string(jsonBytes))
 
-	req, _ := http.NewRequest("POST", url, payload)
+	req, _ := http.NewRequest("POST", pushUrl, payload)
 	req.Header.Add("content-type", "application/json")
 	req.Header.Add("authorization", "Basic ZGFmYWQ5YzNlNWRlMzo0YWUwY2YxYTBkMjE1OWIxY2RhOGIzYWUzNDc4ODVjYw==")
 	req.Header.Add("cache-control", "no-cache")
