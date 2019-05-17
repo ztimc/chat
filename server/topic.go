@@ -2379,7 +2379,7 @@ func (t *Topic) evictUser(uid types.Uid, unsub bool, skip string) {
 // 2. Deleted subscription
 // 3. Permissions changed
 func (t *Topic) notifySubChange(uid, actor types.Uid, oldWant, oldGiven,
-newWant, newGiven types.AccessMode, skip string) {
+	newWant, newGiven types.AccessMode, skip string) {
 
 	unsub := newWant == types.ModeUnset || newGiven == types.ModeUnset
 
@@ -2589,6 +2589,10 @@ func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, 
 			Room:     room,
 		}
 	}
+	var sound string
+	if command == "audio" || command == "video" {
+		sound = "call.caf"
+	}
 
 	receipt := push.Receipt{
 		To: make([]push.Recipient, 1),
@@ -2597,6 +2601,7 @@ func (t *Topic) makeSignalReceipt(fromUid types.Uid, subs []types.Subscription, 
 			Plat:    push.ALL,
 			Title:   "",
 			Content: msg,
+			Sound:   sound,
 			Params:  params,
 		}}
 

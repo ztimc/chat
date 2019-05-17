@@ -65,6 +65,7 @@ type Payload2 struct {
 	Plat    Platform
 	Title   string
 	Content string
+	Sound   string
 	// Client handler params
 	Params map[string]interface{}
 }

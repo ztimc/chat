@@ -34,7 +34,7 @@ type xgParams struct {
 	MessageType  string   `json:"message_type,omitempty"`
 	AccountList  []string `json:"account_list,omitempty"`
 	Environment  string   `json:"environment,omitempty"`
-	MultiPkg     bool   `json:"multi_pkg,omitempty"`
+	MultiPkg     bool     `json:"multi_pkg,omitempty"`
 }
 
 type Message struct {
@@ -211,6 +211,7 @@ func pushAndroid(account string, pl *push.Payload2) {
 
 func pushIos(account string, pl *push.Payload2) {
 
+	var sound = "message.caf"
 	switch pl.Type {
 	case push.PayloadMessage:
 		pl.Params["action"] = "message"
@@ -218,6 +219,10 @@ func pushIos(account string, pl *push.Payload2) {
 		pl.Params["action"] = "contact"
 	case push.PayloadSignal:
 		pl.Params["action"] = "signal"
+	}
+
+	if pl.Sound != "" {
+		sound = pl.Sound
 	}
 
 	params := xgParams{
@@ -234,7 +239,7 @@ func pushIos(account string, pl *push.Payload2) {
 					Alert:    map[string]string{"subtitle": ""},
 					Badge:    -2,
 					Category: "INVITE_CATEGORY",
-					Sound:    "Tassel.wav",
+					Sound:    sound,
 				},
 				Custom: pl.Params,
 			},
