@@ -622,6 +622,10 @@ func (s *Session) login(msg *ClientComMessage) {
 	// check forgot
 	if msg.Login.Scheme == "forgot" {
 		var credMethod, credValue, resp string
+		if msg.Login.Cred == nil {
+			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			return
+		}
 		credMethod = msg.Login.Cred[0].Method
 		credValue = msg.Login.Cred[0].Value
 		resp = msg.Login.Cred[0].Response
