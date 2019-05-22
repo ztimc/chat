@@ -12,6 +12,7 @@ package main
 import (
 	"container/list"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -623,7 +624,7 @@ func (s *Session) login(msg *ClientComMessage) {
 	if msg.Login.Scheme == "forgot" {
 		var credMethod, credValue, resp string
 		if msg.Login.Cred == nil {
-			s.queueOut(decodeStoreError(err, msg.Login.Id, "", msg.timestamp, nil))
+			s.queueOut(decodeStoreError(errors.New("cred is nil"), msg.Login.Id, "", msg.timestamp, nil))
 			return
 		}
 		credMethod = msg.Login.Cred[0].Method
